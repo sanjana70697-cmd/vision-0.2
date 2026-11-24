@@ -57,6 +57,7 @@ import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -77,6 +78,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -562,6 +564,7 @@ fun CentralAiAssistantSheet(
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var draftCommand by remember { mutableStateOf("") }
   var pendingVoiceStartAfterGrant by remember { mutableStateOf(false) }
+  var showMicRationale by remember { mutableStateOf(false) }
 
   val audioPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission(),
@@ -697,8 +700,7 @@ fun CentralAiAssistantSheet(
                 if (isListening) {
                   onStopVoiceListening()
                 } else if (!recordAudioGranted) {
-                  pendingVoiceStartAfterGrant = true
-                  audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                  showMicRationale = true
                 } else {
                   onStartVoiceListening()
                 }
@@ -1080,6 +1082,33 @@ fun CentralAiAssistantSheet(
       }
     }
   }
+
+  if (showMicRationale) {
+    AlertDialog(
+      onDismissRequest = { showMicRationale = false },
+      title = { Text("Allow Microphone for Voice Commands") },
+      text = {
+        Text("VISION uses the microphone only when you tap the mic button to transcribe your voice command to ALFRED. Audio is never recorded in the background.")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showMicRationale = false
+            pendingVoiceStartAfterGrant = true
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = PolishedCopper),
+        ) {
+          Text("Continue", color = Color.White)
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showMicRationale = false }) {
+          Text("Type Instead")
+        }
+      },
+    )
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1168,11 +1197,11 @@ fun SystemMenuAndPermissionsSheet(
       )
 
       PermissionRowCard(
-        title = "Accessibility Focus Shield (Optional)",
-        explanation = "Enforces app blocking on foreground switch when Focus Mode restricts an app.",
-        granted = permissions.accessibilityEnabled,
-        actionLabel = if (permissions.accessibilityEnabled) "Enabled" else "Enable",
-        onAction = { UsageStatsHelper.openAccessibilitySettings(context) },
+        title = "Full-Screen Alarm Display",
+        explanation = "Allows active alarms to display Dismiss and Snooze controls over the lock screen.",
+        granted = permissions.fullScreenIntentGranted,
+        actionLabel = if (permissions.fullScreenIntentGranted) "Allowed" else "Configure",
+        onAction = { UsageStatsHelper.openFullScreenIntentSettings(context) },
       )
 
       PermissionRowCard(

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -48,6 +49,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -126,6 +128,8 @@ fun AlarmScreen(
   val minute = cal.get(Calendar.MINUTE)
   val (timeText, periodText) = DateKeyHelper.formatTime12h(hour24, minute)
   val dateLabel = DateKeyHelper.formatDisplayDate(currentMillis)
+
+  var showNotificationRationale by remember { mutableStateOf(false) }
 
   val notificationLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission(),
@@ -229,8 +233,8 @@ fun AlarmScreen(
         }
       }
 
-      // Permission Readiness Banner if Notifications or Exact Alarms missing
-      if (!permissions.notificationsGranted || !permissions.exactAlarmsGranted) {
+      // Permission Readiness Banner if Notifications, Exact Alarms, or Lock-Screen Display missing
+      if (!permissions.notificationsGranted || !permissions.exactAlarmsGranted || !permissions.fullScreenIntentGranted) {
         item {
           Surface(
             modifier = Modifier
@@ -256,14 +260,14 @@ fun AlarmScreen(
                 )
               }
               Text(
-                text = "Grant Notifications and Exact Alarms so VISION rings reliably when closed or screen is off.",
+                text = "Grant Notifications, Exact Alarms, and Lock-Screen Alarm Display so VISION rings reliably when closed or locked.",
                 style = MaterialTheme.typography.bodySmall,
                 color = SmokedMarbleLight,
               )
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!permissions.notificationsGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                   OutlinedButton(
-                    onClick = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                    onClick = { showNotificationRationale = true },
                   ) {
                     Text("Allow Notifications", color = Color.White)
                   }
@@ -273,6 +277,13 @@ fun AlarmScreen(
                     onClick = { UsageStatsHelper.openExactAlarmSettings(context) },
                   ) {
                     Text("Exact Alarm Access", color = Color.White)
+                  }
+                }
+                if (!permissions.fullScreenIntentGranted) {
+                  OutlinedButton(
+                    onClick = { UsageStatsHelper.openFullScreenIntentSettings(context) },
+                  ) {
+                    Text("Lock-Screen Display", color = Color.White)
                   }
                 }
               }
@@ -356,8 +367,8 @@ fun AlarmScreen(
               showAlarmEditor = true
             },
             onToggle = { enabled ->
-              if (!permissions.notificationsGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+              if (enabled && !permissions.notificationsGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                showNotificationRationale = true
               }
               onToggleAlarm(alarm, enabled)
             },
@@ -462,6 +473,32 @@ fun AlarmScreen(
         )
       }
     }
+  }
+
+  if (showNotificationRationale && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    AlertDialog(
+      onDismissRequest = { showNotificationRationale = false },
+      title = { Text("Allow Alarm Notifications") },
+      text = {
+        Text("VISION uses notification permission only to ring alarms, show Snooze/Dismiss controls, and deliver your scheduled reminders. No personal messages or contacts are accessed.")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showNotificationRationale = false
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = OliveGroveActive),
+        ) {
+          Text("Continue", color = Color.White)
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showNotificationRationale = false }) {
+          Text("Not Now")
+        }
+      },
+    )
   }
 
   if (showAlarmEditor) {

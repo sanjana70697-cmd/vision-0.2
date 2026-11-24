@@ -207,6 +207,7 @@ fun VisionApp(
                     onUpdateAutoRules = viewModel::updateAutoBlockRules,
                     onToggleAppBlock = viewModel::toggleDistractingAppBlock,
                     onAddDistractingApp = viewModel::addDistractingApp,
+                    onOpenAppPicker = viewModel::loadCuratedDistractingApps,
                     onStartTimer = viewModel::startFocusTimer,
                     onPauseTimer = viewModel::pauseFocusTimer,
                     onResetTimer = viewModel::resetFocusTimer,

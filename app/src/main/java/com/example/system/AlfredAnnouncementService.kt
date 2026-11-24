@@ -5,10 +5,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.local.DateKeyHelper
 import com.example.data.local.TaskEntity
@@ -20,6 +23,8 @@ import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -31,6 +36,7 @@ private const val TAG = "AlfredAnnouncementSvc"
  */
 class AlfredAnnouncementService : Service() {
 
+  private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private var tts: TextToSpeech? = null
   private var safetyTimeoutJob: Job? = null
 
@@ -47,7 +53,17 @@ class AlfredAnnouncementService : Service() {
       title,
       spokenText.ifBlank { "ALFRED voice announcement active" },
     )
-    startForeground(VisionNotificationHelper.ANNOUNCEMENT_FG_NOTIFICATION_ID, fgNotif)
+    val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+    } else {
+      0
+    }
+    ServiceCompat.startForeground(
+      this,
+      VisionNotificationHelper.ANNOUNCEMENT_FG_NOTIFICATION_ID,
+      fgNotif,
+      fgsType,
+    )
 
     if (spokenText.isBlank()) {
       stopSelf()
@@ -61,7 +77,7 @@ class AlfredAnnouncementService : Service() {
     }
 
     safetyTimeoutJob?.cancel()
-    safetyTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
+    safetyTimeoutJob = serviceScope.launch {
       delay(20_000L)
       stopSelf()
     }
@@ -101,11 +117,13 @@ class AlfredAnnouncementService : Service() {
 
   override fun onDestroy() {
     safetyTimeoutJob?.cancel()
+    serviceScope.cancel()
     runCatching {
       tts?.stop()
       tts?.shutdown()
     }
     tts = null
+    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     super.onDestroy()
   }
 

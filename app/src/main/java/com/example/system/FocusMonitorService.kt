@@ -3,7 +3,10 @@ package com.example.system
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.data.local.VisionDatabase
 import com.example.data.local.VisionRepository
@@ -75,14 +78,22 @@ class FocusMonitorService : Service() {
     val db = VisionDatabase.getInstance(this)
     val repo = VisionRepository(db.visionDao())
 
-    startForeground(
-      VisionNotificationHelper.FOCUS_NOTIFICATION_ID,
-      VisionNotificationHelper.buildFocusForegroundNotification(
-        this,
-        "VISION Focus Monitor",
-        "Focus & Study Mode monitoring active",
-      ),
+    startFocusForeground(
+      title = "VISION Focus Monitor",
+      body = "Focus & Study Mode monitoring active",
     )
+
+    if (intent?.action == null) {
+      serviceScope.launch {
+        val cfg = repo.getFocusConfigSync()
+        if (cfg.activeTimerRunning || cfg.studyWarningActive) {
+          ensureLoopRunning(repo)
+        } else {
+          stopForegroundAndSelf()
+        }
+      }
+      return START_NOT_STICKY
+    }
 
     when (intent?.action) {
       ACTION_START_FOCUS -> {
@@ -263,13 +274,11 @@ class FocusMonitorService : Service() {
           if (tickCount % 5 == 0) {
             val mins = nextRem / 60
             val secs = nextRem % 60
-            val notif = VisionNotificationHelper.buildFocusForegroundNotification(
-              this@FocusMonitorService,
-              "VISION Focus Active · %02d:%02d".format(mins, secs),
-              if (cfg.studyModeEnabled) "Study Mode enabled (YouTube educational allowance)"
-              else "Blocking selected distracting apps",
+            startFocusForeground(
+              title = "VISION Focus Active · %02d:%02d".format(mins, secs),
+              body = if (cfg.studyModeEnabled) "Study Mode enabled (YouTube educational allowance)"
+              else "Monitoring selected distracting apps",
             )
-            startForeground(VisionNotificationHelper.FOCUS_NOTIFICATION_ID, notif)
           }
         }
 
@@ -376,9 +385,24 @@ class FocusMonitorService : Service() {
     }
   }
 
+  private fun startFocusForeground(title: String, body: String) {
+    val notif = VisionNotificationHelper.buildFocusForegroundNotification(this, title, body)
+    val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+    } else {
+      0
+    }
+    ServiceCompat.startForeground(
+      this,
+      VisionNotificationHelper.FOCUS_NOTIFICATION_ID,
+      notif,
+      fgsType,
+    )
+  }
+
   private fun stopForegroundAndSelf() {
     tickerJob?.cancel()
-    stopForeground(STOP_FOREGROUND_REMOVE)
+    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     stopSelf()
   }
 

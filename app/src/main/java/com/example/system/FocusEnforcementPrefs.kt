@@ -5,8 +5,8 @@ import com.example.data.local.DistractingAppEntity
 import com.example.data.local.FocusConfigEntity
 
 /**
- * Lightweight SharedPreferences mirror of Focus enforcement state so FocusAccessibilityService
- * can perform non-blocking synchronous checks on window state changes.
+ * Lightweight SharedPreferences mirror of Focus enforcement state so FocusMonitorService
+ * can perform fast local checks during active Focus and Study sessions.
  */
 object FocusEnforcementPrefs {
   private const val PREF_NAME = "vision_focus_enforcement"

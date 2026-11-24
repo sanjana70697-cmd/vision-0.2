@@ -46,8 +46,8 @@ import kotlinx.coroutines.launch
 data class PermissionStatusSnapshot(
   val notificationsGranted: Boolean = false,
   val exactAlarmsGranted: Boolean = false,
+  val fullScreenIntentGranted: Boolean = true,
   val usageAccessGranted: Boolean = false,
-  val accessibilityEnabled: Boolean = false,
   val batteryOptimizationIgnored: Boolean = false,
   val recordAudioGranted: Boolean = false,
 )
@@ -177,7 +177,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
     ProductivitySyncWorker.enqueuePeriodicAndImmediate(application.applicationContext)
     refreshPermissionsAndUsage()
-    loadInstalledApps()
   }
 
   fun clearError() {
@@ -193,8 +192,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     _permissions.value = PermissionStatusSnapshot(
       notificationsGranted = VisionNotificationHelper.hasNotificationPermission(ctx),
       exactAlarmsGranted = AlarmScheduler.canScheduleExactAlarms(ctx),
+      fullScreenIntentGranted = UsageStatsHelper.canUseFullScreenIntent(ctx),
       usageAccessGranted = UsageStatsHelper.isUsageAccessGranted(ctx),
-      accessibilityEnabled = UsageStatsHelper.isAccessibilityServiceEnabled(ctx),
       batteryOptimizationIgnored = UsageStatsHelper.isIgnoringBatteryOptimizations(ctx),
       recordAudioGranted = VisionNotificationHelper.hasRecordAudioPermission(ctx),
     )
@@ -204,10 +203,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
-  private fun loadInstalledApps() {
+  fun loadCuratedDistractingApps() {
     viewModelScope.launch(Dispatchers.IO) {
       val ctx = getApplication<Application>()
-      _installedApps.value = UsageStatsHelper.discoverInstalledApps(ctx)
+      _installedApps.value = UsageStatsHelper.curatedDistractingApps(ctx)
     }
   }
 

@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,6 +47,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -96,6 +101,7 @@ fun DistractionScreen(
   onUpdateAutoRules: (Boolean?, Boolean?, Boolean?) -> Unit,
   onToggleAppBlock: (DistractingAppEntity) -> Unit,
   onAddDistractingApp: (InstalledAppCandidate) -> Unit,
+  onOpenAppPicker: () -> Unit = {},
   onStartTimer: (Int) -> Unit,
   onPauseTimer: () -> Unit,
   onResetTimer: (Int) -> Unit,
@@ -110,6 +116,12 @@ fun DistractionScreen(
   val context = LocalContext.current
   var selectedPresetMinutes by remember { mutableIntStateOf(25) }
   var showAppPickerSheet by remember { mutableStateOf(false) }
+
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission(),
+  ) {
+    onRefreshUsage()
+  }
 
   val todayKey = DateKeyHelper.todayKey()
   val todayFocusMinutes = focusSessions.filter { it.dateKey == todayKey }.sumOf { it.actualMinutes }
@@ -207,8 +219,8 @@ fun DistractionScreen(
         }
       }
 
-      // Permission Consent Cards (Usage Access & Accessibility Blocking Service)
-      if (!permissions.usageAccessGranted || !permissions.accessibilityEnabled) {
+      // Permission Consent Cards (Local Usage Access & Notification Alerts — zero Accessibility APIs)
+      if (!permissions.usageAccessGranted || !permissions.notificationsGranted) {
         item {
           Surface(
             modifier = Modifier
@@ -230,14 +242,14 @@ fun DistractionScreen(
               )
               if (!permissions.usageAccessGranted) {
                 Text(
-                  text = "• Usage Access (UsageStatsManager) is required to read real app usage time and detect distracting apps.",
+                  text = "• Usage Access (UsageStatsManager) lets VISION read daily app minutes and detect distracting apps locally on device during Focus sessions. Usage data is never uploaded.",
                   style = MaterialTheme.typography.bodySmall,
                   color = TaupeMarble,
                 )
               }
-              if (!permissions.accessibilityEnabled) {
+              if (!permissions.notificationsGranted) {
                 Text(
-                  text = "• Optional Focus Accessibility Shield enforces automatic redirect when you open a blocked app. VISION never reads screen text.",
+                  text = "• Notifications let VISION display Focus Session countdown status and Study Mode distraction alerts.",
                   style = MaterialTheme.typography.bodySmall,
                   color = TaupeMarble,
                 )
@@ -248,9 +260,11 @@ fun DistractionScreen(
                     Text("Grant Usage Access", color = Color.White)
                   }
                 }
-                if (!permissions.accessibilityEnabled) {
-                  OutlinedButton(onClick = { UsageStatsHelper.openAccessibilitySettings(context) }) {
-                    Text("Enable Shield", color = Color.White)
+                if (!permissions.notificationsGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                  OutlinedButton(
+                    onClick = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                  ) {
+                    Text("Allow Notifications", color = Color.White)
                   }
                 }
               }
@@ -680,7 +694,10 @@ fun DistractionScreen(
                 shape = RoundedCornerShape(14.dp),
                 color = palette.darkGlassCard,
                 border = BorderStroke(1.dp, palette.darkCardBorder),
-                onClick = { showAppPickerSheet = true },
+                onClick = {
+                  onOpenAppPicker()
+                  showAppPickerSheet = true
+                },
               ) {
                 Box(
                   modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
@@ -688,7 +705,7 @@ fun DistractionScreen(
                 ) {
                   Icon(
                     imageVector = Icons.Filled.Add,
-                    contentDescription = "Select installed app",
+                    contentDescription = "Select app to monitor",
                     tint = palette.onDarkCard,
                   )
                 }
@@ -890,6 +907,9 @@ private fun InstalledAppPickerSheet(
   onDismiss: () -> Unit,
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+  var customName by remember { mutableStateOf("") }
+  var customPackage by remember { mutableStateOf("") }
+
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
@@ -904,9 +924,15 @@ private fun InstalledAppPickerSheet(
         .padding(bottom = 24.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      Text("Select Installed App to Monitor", style = MaterialTheme.typography.titleLarge, color = TaupeInk)
+      Text("Add App to Monitor", style = MaterialTheme.typography.titleLarge, color = TaupeInk)
+      Text(
+        text = "Choose a popular app or enter a package name manually. VISION does not scan your full app inventory.",
+        style = MaterialTheme.typography.bodySmall,
+        color = TaupeInk.copy(alpha = 0.72f),
+      )
+
       LazyColumn(
-        modifier = Modifier.height(340.dp),
+        modifier = Modifier.height(250.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
         items(installedApps, key = { it.packageName }) { app ->
@@ -924,7 +950,11 @@ private fun InstalledAppPickerSheet(
             ) {
               Column(modifier = Modifier.weight(1f)) {
                 Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TaupeInk)
-                Text(app.packageName, style = MaterialTheme.typography.bodySmall, color = TaupeInk.copy(alpha = 0.65f))
+                Text(
+                  text = if (app.isInstalled) "${app.packageName} · Installed" else app.packageName,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = TaupeInk.copy(alpha = 0.65f),
+                )
               }
               Text(
                 text = if (isAdded) "Added" else "Add",
@@ -934,6 +964,36 @@ private fun InstalledAppPickerSheet(
             }
           }
         }
+      }
+
+      OutlinedTextField(
+        value = customName,
+        onValueChange = { customName = it },
+        label = { Text("Custom App Name (optional)") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      OutlinedTextField(
+        value = customPackage,
+        onValueChange = { customPackage = it },
+        label = { Text("Package Name (e.g. com.example.app)") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      Button(
+        onClick = {
+          val pkg = customPackage.trim()
+          if (pkg.contains(".")) {
+            val label = customName.trim().ifBlank { pkg.substringAfterLast(".").replaceFirstChar { it.uppercaseChar() } }
+            val tag = label.take(2).uppercase()
+            onSelect(InstalledAppCandidate(packageName = pkg, appName = label, shortTag = tag))
+          }
+        },
+        enabled = customPackage.trim().contains("."),
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = BordeauxRose),
+      ) {
+        Text("Add Custom Package", color = Color.White)
       }
     }
   }

@@ -3,6 +3,7 @@ package com.example.system
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
@@ -12,14 +13,18 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class AlarmRingingService : Service() {
 
+  private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private var mediaPlayer: MediaPlayer? = null
   private var vibrator: Vibrator? = null
   private var timeoutJob: Job? = null
@@ -41,7 +46,17 @@ class AlarmRingingService : Service() {
       label = label,
       timeLabel = timeLabel,
     )
-    startForeground(VisionNotificationHelper.ALARM_NOTIFICATION_ID, notification)
+    val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+    } else {
+      0
+    }
+    ServiceCompat.startForeground(
+      this,
+      VisionNotificationHelper.ALARM_NOTIFICATION_ID,
+      notification,
+      fgsType,
+    )
 
     if (soundEnabled) {
       startAlarmAudio(gentleChime)
@@ -51,7 +66,7 @@ class AlarmRingingService : Service() {
     }
 
     timeoutJob?.cancel()
-    timeoutJob = CoroutineScope(Dispatchers.Main).launch {
+    timeoutJob = serviceScope.launch {
       delay(5 * 60_000L)
       stopSelf()
     }
@@ -82,7 +97,7 @@ class AlarmRingingService : Service() {
 
       if (gentleChime) {
         rampJob?.cancel()
-        rampJob = CoroutineScope(Dispatchers.Main).launch {
+        rampJob = serviceScope.launch {
           var vol = 0.15f
           while (vol < 1.0f && mediaPlayer != null) {
             delay(1500L)
@@ -129,8 +144,10 @@ class AlarmRingingService : Service() {
 
   override fun onDestroy() {
     timeoutJob?.cancel()
+    serviceScope.cancel()
     stopAlarmAudio()
     runCatching { vibrator?.cancel() }
+    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
     super.onDestroy()
   }
 }
