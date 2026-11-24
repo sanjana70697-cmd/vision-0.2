@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">VISION</string>
+    <string name="vision_tagline">Manage Your Time. Control Your Focus. Build Your Future.</string>
+    <string name="tab_dashboard">Dashboard</string>
+    <string name="tab_alarm">Alarm</string>
+    <string name="tab_distraction">Distraction</string>
+    <string name="tab_report">Report</string>
+    <string name="cd_vision_logo">VISION Logo</string>
+    <string name="cd_menu_button">Open permissions &amp; system menu</string>
+    <string name="cd_ai_voice_button">Open ALFRED AI personal assistant</string>
+    <string name="cd_alfred_mic">Activate ALFRED voice input</string>
+    <string name="cd_alfred_speak">Speak ALFRED response</string>
+    <string name="alfred_title">ALFRED Personal Assistant</string>
+    <string name="accessibility_focus_service_description">Optional user-consented Focus Shield: detects only when a blocked distracting app enters the foreground during an active Focus or Study session and returns to the home screen. VISION never reads screen text or personal content.</string>
+</resources>

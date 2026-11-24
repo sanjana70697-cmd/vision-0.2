@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Teal V-shaped symbol -->
+    <path
+        android:fillColor="#16848A"
+        android:pathData="M18,24 L33,24 L51,66 L51,86 Z" />
+    <path
+        android:fillColor="#2CC0C6"
+        android:pathData="M51,66 L69,24 L82,24 L51,86 Z" />
+    <path
+        android:fillColor="#5CE4E8"
+        android:pathData="M51,66 L69,24 L72,24 L51,71 Z" />
+    <!-- Orange upward arrow -->
+    <path
+        android:fillColor="#F47920"
+        android:pathData="M47,57 L74,26 L67,20 L91,14 L85,37 L78,31 L52,63 Z" />
+    <path
+        android:fillColor="#FFA94D"
+        android:pathData="M48,57 L74,26 L69,21 L91,14 L76,28 L50,60 Z" />
+</vector>
