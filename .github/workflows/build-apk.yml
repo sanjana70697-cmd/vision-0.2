@@ -36,7 +36,7 @@ jobs:
           JAVA_VER_LINE="$(java -version 2>&1 | head -n 1)"
           if [[ "$JAVA_VER_LINE" =~ \"([0-9]+)(\.([0-9]+))?.*\" ]]; then
             MAJOR="${BASH_REMATCH[1]}"
-            if [ "$MAJOR" = "1" ] && [ -n "${BASH_REMATCH[3]}" ]; then
+            if [ "$MAJOR" = "1" ] && [ -n "${BASH_REMATCH[3]:-}" ]; then
               MAJOR="${BASH_REMATCH[3]}"
             fi
           else
@@ -193,18 +193,19 @@ jobs:
           RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
 
           NOTES_FILE="$(mktemp "${RUNNER_TEMP}/release-notes-XXXXXX.md")"
-          cat <<EOF > "$NOTES_FILE"
-          This is an automatically generated debug APK built by GitHub Actions.
-
-          - **Workflow Run Number:** ${GITHUB_RUN_NUMBER}
-          - **Workflow Run Attempt:** ${GITHUB_RUN_ATTEMPT}
-          - **Source Commit SHA:** ${GITHUB_SHA}
-
-          ### Important Notices
-          - Intended for **testing only**.
-          - **Not** a Play Store production release.
-          - Signed only with a temporary debug keystore generated for this build.
-          EOF
+          printf '%s\n' \
+            "This is an automatically generated debug APK." \
+            "The APK was built by GitHub Actions." \
+            "" \
+            "- **GitHub Actions Run Number:** ${GITHUB_RUN_NUMBER}" \
+            "- **GitHub Actions Run Attempt:** ${GITHUB_RUN_ATTEMPT}" \
+            "- **Source Commit SHA:** ${GITHUB_SHA}" \
+            "" \
+            "### Important Notices" \
+            "- This APK is intended for testing." \
+            "- This APK is not a Play Store production release." \
+            "- This APK is signed only with a temporary debug keystore." \
+            > "$NOTES_FILE"
 
           gh release create "$RELEASE_TAG" "$ASSET_PATH" \
             --title "$RELEASE_TITLE" \
@@ -213,7 +214,7 @@ jobs:
             --latest
 
       - name: Report APK download result
-        if: ${{ always() && steps.upload_artifact.outcome == 'success' && steps.prepare_asset.outcome == 'success' }}
+        if: ${{ always() && steps.upload_artifact.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_OUTCOME: ${{ steps.publish_release.outcome }}
