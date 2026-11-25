@@ -3,13 +3,13 @@ package com.example.domain.alfred
 import com.example.data.local.AlarmEntity
 import com.example.data.local.DateKeyHelper
 import com.example.data.local.TaskEntity
-import com.example.system.UsageStatsHelper
 import com.example.ui.theme.VisionTab
 import java.util.Locale
 
 /**
  * Deterministic offline rule-based engine for ALFRED.
- * Executes cross-tab actions cleanly through the single shared [AlfredCoordinator] without needing internet.
+ * Executes verified cross-tab actions through [AlfredCoordinator], checks actual Result outcomes,
+ * and proposes confirmation before important or destructive actions when [requireConfirmation] is true.
  */
 object AlfredRuleEngine {
 
@@ -21,22 +21,44 @@ object AlfredRuleEngine {
     RegexOption.IGNORE_CASE,
   )
 
-  /**
-   * Attempts deterministic execution of [rawCommand].
-   * Returns null only when [allowOpenFallback] is false and the input looks like an open-ended
-   * planning question better handled by Cloud Gemini when online.
-   */
   suspend fun tryExecute(
     rawCommand: String,
     snapshot: AlfredContextSnapshot,
     coordinator: AlfredCoordinator,
     allowOpenFallback: Boolean = true,
+    requireConfirmation: Boolean = false,
   ): AlfredExecutionResult? {
     val cmd = rawCommand.trim()
     if (cmd.isEmpty()) return null
     val lower = cmd.lowercase(Locale.US)
 
-    // 1. Morning / Greeting / Briefing
+    // 0. Honest AI Identity & Capability Answers (never pretend to be human)
+    if (
+      lower.contains("are you human") ||
+      lower.contains("are you a person") ||
+      lower.contains("are you real") ||
+      lower == "who are you" ||
+      lower == "what are you"
+    ) {
+      val reply = "I'm ALFRED, an AI assistant built into the VISION Android app—not a human. I can help you manage tasks, set alarms and reminders, monitor study sessions, plan tomorrow's schedule, and discuss your productivity."
+      return AlfredExecutionResult(
+        replyText = reply,
+        spokenText = reply,
+        executedActions = emptyList(),
+      )
+    }
+
+    if (lower == "hi" || lower == "hello" || lower == "hey" || lower == "hey alfred") {
+      val rec = AlfredAnnouncementEngine.recommendNextTask(snapshot)
+      val reply = "Hello! I'm ALFRED, your VISION AI assistant. Today you've completed ${snapshot.todayProductivity.completedTasks} of ${snapshot.todayProductivity.totalTasks} tasks. Next suggestion: ${rec.headline}. How can I help?"
+      return AlfredExecutionResult(
+        replyText = reply,
+        spokenText = "Hello! Today you have completed ${snapshot.todayProductivity.completedTasks} of ${snapshot.todayProductivity.totalTasks} tasks. How can I help?",
+        executedActions = emptyList(),
+      )
+    }
+
+    // 1. Morning / Briefing
     if (
       lower.contains("good morning") ||
       lower.contains("wake up briefing") ||
@@ -65,7 +87,7 @@ object AlfredRuleEngine {
       return AlfredExecutionResult(
         replyText = text,
         spokenText = text,
-        executedActions = listOf("Dashboard · Analyzed schedule & priorities"),
+        executedActions = listOf("Dashboard · Analyzed today's schedule"),
         suggestedTab = VisionTab.Dashboard,
       )
     }
@@ -74,8 +96,7 @@ object AlfredRuleEngine {
       lower.contains("organize my day") ||
       lower.contains("plan my day") ||
       lower.contains("my schedule") ||
-      lower.contains("brief me") ||
-      lower.contains("status")
+      lower.contains("brief me")
     ) {
       val summary = AlfredAnnouncementEngine.organizeDaySummary(snapshot)
       val rec = AlfredAnnouncementEngine.recommendNextTask(snapshot)
@@ -103,7 +124,7 @@ object AlfredRuleEngine {
       )
     }
 
-    if (lower.contains("daily report") || lower.contains("report") || lower.contains("productivity") || lower.contains("progress")) {
+    if (lower.contains("daily report") || lower.contains("read report") || lower == "report") {
       val announcement = AlfredAnnouncementEngine.buildDailyReportReadyAnnouncement(snapshot.todayProductivity)
       return AlfredExecutionResult(
         replyText = announcement.message,
@@ -117,15 +138,22 @@ object AlfredRuleEngine {
       val note = cmd
         .replace(Regex("""^(plan tomorrow|next day plan|note for tomorrow)\s*[:,-]?\s*""", RegexOption.IGNORE_CASE), "")
         .trim()
-      if (note.isNotBlank()) {
-        coordinator.updateNextDayPlanNote(note)
+      if (note.isBlank()) {
+        val reply = "Please include the plan note after \"Plan tomorrow\", for example: \"Plan tomorrow Finish Kotlin project before noon\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList())
+      }
+      val res = coordinator.updateNextDayPlanNote(note)
+      return if (res.isSuccess) {
         val reply = "Saved tomorrow's plan note: \"$note\"."
-        return AlfredExecutionResult(
+        AlfredExecutionResult(
           replyText = reply,
           spokenText = reply,
-          executedActions = listOf("Report · Updated next-day planning note"),
+          executedActions = listOf("Report · Saved next-day planning note"),
           suggestedTab = VisionTab.Report,
         )
+      } else {
+        val err = res.exceptionOrNull()?.localizedMessage ?: "Unable to save planning note."
+        AlfredExecutionResult(replyText = "Could not save tomorrow's note: $err", spokenText = err, executedActions = emptyList())
       }
     }
 
@@ -140,26 +168,29 @@ object AlfredRuleEngine {
     ) {
       val mins = extractMinutes(lower) ?: 25
       val enableStudy = lower.contains("study")
-      if (enableStudy) coordinator.setStudyMode(true)
-      coordinator.setFocusMode(true)
-      coordinator.startFocusTimer(mins)
+      if (enableStudy) {
+        coordinator.startStudySession(mins)
+      } else {
+        coordinator.setFocusMode(true)
+        coordinator.startFocusTimer(mins)
+      }
       val studyOn = enableStudy || snapshot.focusConfig.studyModeEnabled
       val announcement = AlfredAnnouncementEngine.buildStudyStartAnnouncement(mins, studyOn)
       return AlfredExecutionResult(
         replyText = announcement.message,
         spokenText = announcement.spokenMessage,
-        executedActions = listOf("Distraction · Started ${mins}m timer & Focus Shield"),
+        executedActions = listOf("Distraction · Started ${mins}m ${if (enableStudy) "Study" else "Focus"} session"),
         suggestedTab = VisionTab.Distraction,
       )
     }
 
     if (lower.contains("pause focus") || lower.contains("pause timer") || lower.contains("pause study")) {
       coordinator.pauseFocusTimer()
-      val reply = "Focus timer paused."
+      val reply = "Paused the active timer."
       return AlfredExecutionResult(
         replyText = reply,
         spokenText = reply,
-        executedActions = listOf("Distraction · Paused active focus timer"),
+        executedActions = listOf("Distraction · Paused active timer"),
         suggestedTab = VisionTab.Distraction,
       )
     }
@@ -173,88 +204,154 @@ object AlfredRuleEngine {
       lower.contains("turn off focus") ||
       lower.contains("disable focus")
     ) {
-      coordinator.resetFocusTimer(25)
-      coordinator.setFocusMode(false)
-      val reply = "Focus session ended and Focus Mode turned off."
+      if (requireConfirmation && (snapshot.focusConfig.activeTimerRunning || snapshot.focusConfig.focusModeEnabled)) {
+        return AlfredExecutionResult(
+          replyText = "Your Focus / Study session is currently active. Confirm if you want me to stop it and turn off Focus Shield.",
+          spokenText = "Confirm if you want to stop your active focus session.",
+          executedActions = emptyList(),
+          suggestedTab = VisionTab.Distraction,
+          pendingConfirmation = PendingAlfredAction(
+            title = "Stop Active Study / Focus Session?",
+            description = "This will stop the active session timer, save current elapsed minutes, and turn off Focus Shield.",
+            isDestructive = false,
+            suggestedTab = VisionTab.Distraction,
+            payload = AlfredActionPayload.StopFocusAndStudySession,
+          ),
+        )
+      }
+      coordinator.stopStudySession()
+      val reply = "Study / Focus session stopped and Focus Mode turned off."
       return AlfredExecutionResult(
         replyText = reply,
         spokenText = reply,
-        executedActions = listOf("Distraction · Stopped focus timer & disabled Focus Mode"),
+        executedActions = listOf("Distraction · Stopped session & disabled Focus Mode"),
         suggestedTab = VisionTab.Distraction,
       )
     }
 
     if (lower.contains("turn on focus") || lower.contains("enable focus")) {
-      coordinator.setFocusMode(true)
-      val reply = "Focus Mode enabled for ${snapshot.focusConfig.blockDurationMinutes} minutes."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("Distraction · Enabled Focus Mode"),
-        suggestedTab = VisionTab.Distraction,
-      )
+      val res = coordinator.setFocusMode(true)
+      return if (res.isSuccess) {
+        val reply = "Focus Mode enabled for ${snapshot.focusConfig.blockDurationMinutes} minutes."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("Distraction · Enabled Focus Mode"),
+          suggestedTab = VisionTab.Distraction,
+        )
+      } else {
+        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to enable Focus Mode."
+        AlfredExecutionResult(replyText = err, spokenText = err, executedActions = emptyList())
+      }
     }
 
     if (lower.contains("enable study mode") || lower.contains("turn on study mode")) {
-      coordinator.setStudyMode(true)
-      val reply = "Study Mode enabled. YouTube stays allowed for educational learning with grace-period monitoring."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("Distraction · Enabled Study Mode"),
-        suggestedTab = VisionTab.Distraction,
-      )
+      val res = coordinator.setStudyMode(true)
+      return if (res.isSuccess) {
+        val reply = "Study Mode enabled. Switching to YouTube or monitored distracting apps during an active Study Session will trigger a reminder."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("Distraction · Enabled Study Mode"),
+          suggestedTab = VisionTab.Distraction,
+        )
+      } else {
+        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to enable Study Mode."
+        AlfredExecutionResult(replyText = err, spokenText = err, executedActions = emptyList())
+      }
     }
 
     if (lower.contains("disable study mode") || lower.contains("turn off study mode")) {
-      coordinator.setStudyMode(false)
-      val reply = "Study Mode disabled."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("Distraction · Disabled Study Mode"),
-        suggestedTab = VisionTab.Distraction,
-      )
+      val res = coordinator.setStudyMode(false)
+      return if (res.isSuccess) {
+        val reply = "Study Mode disabled."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("Distraction · Disabled Study Mode"),
+          suggestedTab = VisionTab.Distraction,
+        )
+      } else {
+        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to disable Study Mode."
+        AlfredExecutionResult(replyText = err, spokenText = err, executedActions = emptyList())
+      }
     }
 
     if (lower.startsWith("unblock ") || lower.startsWith("allow ")) {
       val target = cmd.substringAfter(" ").trim()
       val matched = snapshot.distractingApps.firstOrNull {
-        it.appName.contains(target, ignoreCase = true) ||
-          it.shortTag.equals(target, ignoreCase = true)
+        target.isNotBlank() && (it.appName.contains(target, ignoreCase = true) ||
+          it.shortTag.equals(target, ignoreCase = true))
       }
       if (matched != null) {
-        if (matched.isBlocked) coordinator.toggleAppBlock(matched)
-        val reply = "${matched.appName} is now unblocked."
-        return AlfredExecutionResult(
-          replyText = reply,
-          spokenText = reply,
-          executedActions = listOf("Distraction · Unblocked ${matched.appName}"),
-          suggestedTab = VisionTab.Distraction,
-        )
+        if (!matched.isBlocked) {
+          return AlfredExecutionResult(
+            replyText = "${matched.appName} is already allowed.",
+            spokenText = "${matched.appName} is already allowed.",
+            executedActions = emptyList(),
+            suggestedTab = VisionTab.Distraction,
+          )
+        }
+        if (requireConfirmation && (snapshot.focusConfig.focusModeEnabled || snapshot.focusConfig.activeTimerRunning)) {
+          return AlfredExecutionResult(
+            replyText = "Focus protection is active. Confirm if you want to unblock ${matched.appName}.",
+            spokenText = "Confirm unblocking ${matched.appName}.",
+            executedActions = emptyList(),
+            suggestedTab = VisionTab.Distraction,
+            pendingConfirmation = PendingAlfredAction(
+              title = "Unblock ${matched.appName} During Focus?",
+              description = "This will remove ${matched.appName} from your active Focus block list.",
+              isDestructive = false,
+              suggestedTab = VisionTab.Distraction,
+              payload = AlfredActionPayload.UnblockApp(matched.packageName, matched.appName),
+            ),
+          )
+        }
+        val res = coordinator.toggleAppBlock(matched)
+        return if (res.isSuccess) {
+          val reply = "${matched.appName} is now unblocked."
+          AlfredExecutionResult(
+            replyText = reply,
+            spokenText = reply,
+            executedActions = listOf("Distraction · Unblocked ${matched.appName}"),
+            suggestedTab = VisionTab.Distraction,
+          )
+        } else {
+          val err = res.exceptionOrNull()?.localizedMessage ?: "Could not unblock ${matched.appName}."
+          AlfredExecutionResult(replyText = err, spokenText = err, executedActions = emptyList())
+        }
       }
     }
 
     if (lower.startsWith("block ")) {
       val durationMatch = extractMinutes(lower)
       if (lower.contains("block for ") && durationMatch != null) {
-        coordinator.setBlockDuration(durationMatch)
-        coordinator.setFocusMode(true)
-        val reply = "Focus blocking activated for $durationMatch minutes."
-        return AlfredExecutionResult(
-          replyText = reply,
-          spokenText = reply,
-          executedActions = listOf("Distraction · Armed Focus blocking for ${durationMatch}m"),
-          suggestedTab = VisionTab.Distraction,
-        )
+        val dRes = coordinator.setBlockDuration(durationMatch)
+        val fRes = coordinator.setFocusMode(true)
+        return if (dRes.isSuccess && fRes.isSuccess) {
+          val reply = "Focus blocking activated for $durationMatch minutes."
+          AlfredExecutionResult(
+            replyText = reply,
+            spokenText = reply,
+            executedActions = listOf("Distraction · Armed Focus blocking for ${durationMatch}m"),
+            suggestedTab = VisionTab.Distraction,
+          )
+        } else {
+          AlfredExecutionResult(replyText = "Unable to update focus blocking.", spokenText = "Unable to update focus blocking.", executedActions = emptyList())
+        }
       }
       val target = cmd.substringAfter(" ").trim()
       val matched = snapshot.distractingApps.firstOrNull {
-        it.appName.contains(target, ignoreCase = true) ||
-          it.shortTag.equals(target, ignoreCase = true)
+        target.isNotBlank() && (it.appName.contains(target, ignoreCase = true) ||
+          it.shortTag.equals(target, ignoreCase = true))
       }
       if (matched != null) {
-        if (!matched.isBlocked) coordinator.toggleAppBlock(matched)
+        if (!matched.isBlocked) {
+          val bRes = coordinator.toggleAppBlock(matched)
+          if (bRes.isFailure) {
+            return AlfredExecutionResult(replyText = "Failed to block ${matched.appName}.", spokenText = "Failed to block ${matched.appName}.", executedActions = emptyList())
+          }
+        }
         coordinator.setFocusMode(true)
         val reply = "${matched.appName} is now blocked and Focus Mode is active."
         return AlfredExecutionResult(
@@ -272,29 +369,36 @@ object AlfredRuleEngine {
       (lower.contains("alarm") || lower.contains("reminder") || lower.contains("wake"))
     ) {
       val parsedTime = parseHourMinute24(lower)
-      if (parsedTime != null) {
-        val (hour24, minute) = parsedTime
-        val isReminder = lower.contains("reminder") || lower.contains("remind me")
-        val kind = if (isReminder) "REMINDER" else "ALARM"
-        val cleanLabel = extractLabelAfterTimeOrKeyword(cmd, isReminder)
-        val newAlarm = AlarmEntity(
-          hour24 = hour24,
-          minute = minute,
-          label = cleanLabel,
-          kind = kind,
-          isWakeUp = kind == "ALARM" && (lower.contains("wake") || hour24 in 4..9),
-          repeatDaysCsv = if (lower.contains("daily") || lower.contains("every day")) "1,2,3,4,5,6,7" else "",
-          enabled = true,
-        )
-        coordinator.saveAndScheduleAlarm(newAlarm)
+      if (parsedTime == null) {
+        val reply = "Please specify a time for the alarm or reminder, for example: \"Set reminder at 5:30 PM Read notes\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList())
+      }
+      val (hour24, minute) = parsedTime
+      val isReminder = lower.contains("reminder") || lower.contains("remind me")
+      val kind = if (isReminder) "REMINDER" else "ALARM"
+      val cleanLabel = extractLabelAfterTimeOrKeyword(cmd, isReminder)
+      val newAlarm = AlarmEntity(
+        hour24 = hour24,
+        minute = minute,
+        label = cleanLabel,
+        kind = kind,
+        isWakeUp = kind == "ALARM" && (lower.contains("wake") || hour24 in 4..9),
+        repeatDaysCsv = if (lower.contains("daily") || lower.contains("every day")) "1,2,3,4,5,6,7" else "",
+        enabled = true,
+      )
+      val saveRes = coordinator.saveAndScheduleAlarm(newAlarm)
+      return if (saveRes.isSuccess) {
         val timeFmt = DateKeyHelper.formatFullTime12h(hour24, minute)
         val reply = "${if (isReminder) "Reminder" else "Alarm"} set for $timeFmt: \"$cleanLabel\"."
-        return AlfredExecutionResult(
+        AlfredExecutionResult(
           replyText = reply,
           spokenText = reply,
           executedActions = listOf("Alarm · Scheduled $kind for $timeFmt"),
           suggestedTab = VisionTab.Alarm,
         )
+      } else {
+        val err = saveRes.exceptionOrNull()?.localizedMessage ?: "Failed to save reminder."
+        AlfredExecutionResult(replyText = "Could not save: $err", spokenText = err, executedActions = emptyList())
       }
     }
 
@@ -308,16 +412,34 @@ object AlfredRuleEngine {
             DateKeyHelper.formatFullTime12h(it.hour24, it.minute).contains(query, ignoreCase = true))
         }
       }
-      if (targets.isNotEmpty()) {
-        targets.forEach { coordinator.toggleAlarmEnabled(it, false) }
-        val reply = "Disabled ${targets.size} ${if (targets.size == 1) "alarm" else "alarms"}."
+      if (targets.isEmpty()) {
+        val reply = "No active alarm matched \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList(), suggestedTab = VisionTab.Alarm)
+      }
+      if (requireConfirmation) {
+        val labelSummary = if (targets.size == 1) "\"${targets.first().label}\"" else "${targets.size} active alarms"
         return AlfredExecutionResult(
-          replyText = reply,
-          spokenText = reply,
-          executedActions = listOf("Alarm · Disabled ${targets.size} alarm(s)"),
+          replyText = "Confirm if you want to disable $labelSummary.",
+          spokenText = "Confirm disabling $labelSummary.",
+          executedActions = emptyList(),
           suggestedTab = VisionTab.Alarm,
+          pendingConfirmation = PendingAlfredAction(
+            title = "Disable $labelSummary?",
+            description = "Disabled alarms and reminders will not ring until re-enabled.",
+            isDestructive = false,
+            suggestedTab = VisionTab.Alarm,
+            payload = AlfredActionPayload.DisableAlarms(targets.map { it.id }, labelSummary),
+          ),
         )
       }
+      targets.forEach { coordinator.toggleAlarmEnabled(it, false) }
+      val reply = "Disabled ${targets.size} ${if (targets.size == 1) "alarm" else "alarms"}."
+      return AlfredExecutionResult(
+        replyText = reply,
+        spokenText = reply,
+        executedActions = listOf("Alarm · Disabled ${targets.size} alarm(s)"),
+        suggestedTab = VisionTab.Alarm,
+      )
     }
 
     if (lower.startsWith("enable alarm") || lower.startsWith("turn on alarm")) {
@@ -330,59 +452,102 @@ object AlfredRuleEngine {
             DateKeyHelper.formatFullTime12h(it.hour24, it.minute).contains(query, ignoreCase = true))
         }
       }
-      if (targets.isNotEmpty()) {
-        targets.forEach { coordinator.toggleAlarmEnabled(it, true) }
-        val reply = "Enabled ${targets.size} ${if (targets.size == 1) "alarm" else "alarms"}."
-        return AlfredExecutionResult(
-          replyText = reply,
-          spokenText = reply,
-          executedActions = listOf("Alarm · Armed ${targets.size} alarm(s)"),
-          suggestedTab = VisionTab.Alarm,
-        )
+      if (targets.isEmpty()) {
+        val reply = "No disabled alarm matched \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList(), suggestedTab = VisionTab.Alarm)
       }
+      targets.forEach { coordinator.toggleAlarmEnabled(it, true) }
+      val reply = "Enabled ${targets.size} ${if (targets.size == 1) "alarm" else "alarms"}."
+      return AlfredExecutionResult(
+        replyText = reply,
+        spokenText = reply,
+        executedActions = listOf("Alarm · Armed ${targets.size} alarm(s)"),
+        suggestedTab = VisionTab.Alarm,
+      )
     }
 
-    if (lower.startsWith("delete alarm") || lower.startsWith("remove alarm")) {
-      val query = cmd.replace(Regex("""^(delete|remove)\s+alarm\s*""", RegexOption.IGNORE_CASE), "").trim()
+    if (lower.startsWith("delete alarm") || lower.startsWith("remove alarm") ||
+      lower.startsWith("delete reminder") || lower.startsWith("remove reminder")
+    ) {
+      val query = cmd.replace(Regex("""^(delete|remove)\s+(alarm|reminder)\s*""", RegexOption.IGNORE_CASE), "").trim()
       val target = snapshot.alarms.firstOrNull {
         query.isNotBlank() && (it.label.contains(query, ignoreCase = true) ||
           DateKeyHelper.formatFullTime12h(it.hour24, it.minute).contains(query, ignoreCase = true))
       }
-      if (target != null) {
-        coordinator.deleteAndCancelAlarm(target.id)
-        val reply = "Deleted alarm \"${target.label}\"."
+      if (target == null) {
+        val reply = "I couldn't find an alarm or reminder matching \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList(), suggestedTab = VisionTab.Alarm)
+      }
+      if (requireConfirmation) {
+        val timeFmt = DateKeyHelper.formatFullTime12h(target.hour24, target.minute)
         return AlfredExecutionResult(
+          replyText = "Are you sure you want to permanently delete \"${target.label}\" ($timeFmt)?",
+          spokenText = "Confirm deleting ${target.label}.",
+          executedActions = emptyList(),
+          suggestedTab = VisionTab.Alarm,
+          pendingConfirmation = PendingAlfredAction(
+            title = "Delete \"${target.label}\"?",
+            description = "Scheduled for $timeFmt. Deleting removes it permanently from VISION.",
+            isDestructive = true,
+            suggestedTab = VisionTab.Alarm,
+            payload = AlfredActionPayload.DeleteAlarm(target.id, target.label),
+          ),
+        )
+      }
+      val delRes = coordinator.deleteAndCancelAlarm(target.id)
+      return if (delRes.isSuccess) {
+        val reply = "Deleted \"${target.label}\"."
+        AlfredExecutionResult(
           replyText = reply,
           spokenText = reply,
           executedActions = listOf("Alarm · Deleted ${target.label}"),
           suggestedTab = VisionTab.Alarm,
         )
+      } else {
+        AlfredExecutionResult(replyText = "Could not delete ${target.label}.", spokenText = "Could not delete.", executedActions = emptyList())
       }
     }
 
     // 6. Habit Logging (Yoga / Skill)
-    if (lower.contains("log yoga") || lower.contains("yoga done") || lower.contains("complete yoga")) {
+    if (
+      lower.contains("log yoga") ||
+      lower.contains("yoga done") ||
+      lower.contains("complete yoga") ||
+      Regex("""\blog\b.*\byoga\b""").containsMatchIn(lower)
+    ) {
       val mins = extractMinutes(lower) ?: 20
-      coordinator.logHabit("YOGA_EXERCISE", "Morning Yoga & Exercise", mins, true)
-      val reply = "Logged $mins minutes of Morning Yoga & Exercise."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("Dashboard · Logged +${mins}m Yoga & Exercise"),
-        suggestedTab = VisionTab.Dashboard,
-      )
+      val res = coordinator.logHabit("YOGA_EXERCISE", "Morning Yoga & Exercise", mins, true)
+      return if (res.isSuccess) {
+        val reply = "Logged $mins minutes of Morning Yoga & Exercise."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("Dashboard · Logged +${mins}m Yoga & Exercise"),
+          suggestedTab = VisionTab.Dashboard,
+        )
+      } else {
+        AlfredExecutionResult(replyText = "Could not log yoga progress.", spokenText = "Could not log yoga progress.", executedActions = emptyList())
+      }
     }
 
-    if (lower.contains("log skill") || lower.contains("skill done")) {
+    if (
+      lower.contains("log skill") ||
+      lower.contains("skill done") ||
+      Regex("""\blog\b.*\bskill\b""").containsMatchIn(lower)
+    ) {
       val mins = extractMinutes(lower) ?: 30
-      coordinator.logHabit("SKILL_DEV", "Skill Development", mins, true)
-      val reply = "Logged $mins minutes of Skill Development."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("Dashboard · Logged +${mins}m Skill Development"),
-        suggestedTab = VisionTab.Dashboard,
-      )
+      val res = coordinator.logHabit("SKILL_DEV", "Skill Development · Web & CPPM", mins, true)
+      return if (res.isSuccess) {
+        val reply = "Logged $mins minutes of Skill Development."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("Dashboard · Logged +${mins}m Skill Development"),
+          suggestedTab = VisionTab.Dashboard,
+        )
+      } else {
+        AlfredExecutionResult(replyText = "Could not log skill development.", spokenText = "Could not log skill development.", executedActions = emptyList())
+      }
     }
 
     // 7. Task Creation, Completion, Rescheduling, Deletion
@@ -395,14 +560,17 @@ object AlfredRuleEngine {
     ) {
       val parsedTime = parseHourMinute24(lower)
       val isTomorrow = lower.contains("tomorrow")
-      val isPriority = lower.contains("priority") || lower.contains("urgent") || lower.contains("important")
       val isRoutine = lower.contains("routine") || lower.contains("daily")
-      var title = cmd
+      val title = cmd
         .replace(Regex("""^(add task|create task|new task|schedule task|remind me to)\s*[:,-]?\s*""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""\b(for|at)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b""", RegexOption.IGNORE_CASE), "")
         .replace(Regex("""\b(tomorrow|today|priority|urgent|important|as a routine|routine)\b""", RegexOption.IGNORE_CASE), "")
         .trim()
-      if (title.isBlank()) title = "New Focus Task"
+
+      if (title.isBlank()) {
+        val reply = "Please tell me the task title, for example: \"Add task Revise Algorithms at 5 PM\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList())
+      }
 
       val minsOfDay = parsedTime?.let { it.first * 60 + it.second } ?: -1
       val timeText = parsedTime?.let { DateKeyHelper.formatFullTime12h(it.first, it.second) } ?: ""
@@ -414,29 +582,34 @@ object AlfredRuleEngine {
         category = category,
         scheduledTimeText = timeText,
         scheduledMinutesOfDay = minsOfDay,
-        isPriority = isPriority,
+        isPriority = lower.contains("priority"),
         isRoutine = isRoutine,
         isCompleted = false,
         dateKey = dateKey,
       )
-      coordinator.createOrUpdateTask(entity)
-      val whenStr = buildString {
-        if (isTomorrow) append(" for tomorrow")
-        if (timeText.isNotBlank()) append(" at $timeText")
+      val saveRes = coordinator.createOrUpdateTask(entity)
+      return if (saveRes.isSuccess) {
+        val whenStr = buildString {
+          if (isTomorrow) append(" for tomorrow")
+          if (timeText.isNotBlank()) append(" at $timeText")
+        }
+        val reply = "Created task \"$title\"$whenStr in ${if (isTomorrow) "Tomorrow's Plan" else "Today's Schedule"}."
+        AlfredExecutionResult(
+          replyText = reply,
+          spokenText = reply,
+          executedActions = listOf("${if (isTomorrow) "Report" else "Dashboard"} · Created task \"$title\""),
+          suggestedTab = if (isTomorrow) VisionTab.Report else VisionTab.Dashboard,
+        )
+      } else {
+        val err = saveRes.exceptionOrNull()?.localizedMessage ?: "Failed to create task."
+        AlfredExecutionResult(replyText = "Could not add task: $err", spokenText = err, executedActions = emptyList())
       }
-      val reply = "Created task \"$title\"$whenStr in ${if (isTomorrow) "Tomorrow's Plan" else "Today's Schedule"}."
-      return AlfredExecutionResult(
-        replyText = reply,
-        spokenText = reply,
-        executedActions = listOf("${if (isTomorrow) "Report" else "Dashboard"} · Created task \"$title\""),
-        suggestedTab = if (isTomorrow) VisionTab.Report else VisionTab.Dashboard,
-      )
     }
 
     if (
       lower.startsWith("complete ") ||
       lower.startsWith("finish ") ||
-      lower.startsWith("mark ") && (lower.contains("done") || lower.contains("complete"))
+      (lower.startsWith("mark ") && (lower.contains("done") || lower.contains("complete")))
     ) {
       val query = cmd
         .replace(Regex("""^(complete|finish|mark)\s+(task\s+)?""", RegexOption.IGNORE_CASE), "")
@@ -449,18 +622,25 @@ object AlfredRuleEngine {
           AlfredAnnouncementEngine.recommendNextTask(snapshot).task ?: pending.firstOrNull()
         else -> pending.firstOrNull { it.title.contains(query, ignoreCase = true) }
       }
-      if (target != null) {
-        coordinator.toggleTaskCompleted(target)
+      if (target == null) {
+        val reply = if (query.isBlank()) "All of today's tasks are already complete." else "I couldn't find a pending task matching \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList())
+      }
+      val toggleRes = coordinator.toggleTaskCompleted(target)
+      return if (toggleRes.isSuccess) {
         val doneCount = snapshot.todayProductivity.completedTasks + 1
         val totalCount = snapshot.todayProductivity.totalTasks.coerceAtLeast(doneCount)
         val pct = (doneCount * 100) / totalCount
         val reply = "Marked \"${target.title}\" complete. You have completed $doneCount ${if (doneCount == 1) "task" else "tasks"} today ($pct%)."
-        return AlfredExecutionResult(
+        AlfredExecutionResult(
           replyText = reply,
           spokenText = reply,
           executedActions = listOf("Dashboard · Completed \"${target.title}\""),
           suggestedTab = VisionTab.Dashboard,
         )
+      } else {
+        val err = toggleRes.exceptionOrNull()?.localizedMessage ?: "Unable to update task."
+        AlfredExecutionResult(replyText = err, spokenText = err, executedActions = emptyList())
       }
     }
 
@@ -477,36 +657,49 @@ object AlfredRuleEngine {
 
       val target = snapshot.allPendingTasks.firstOrNull {
         query.isNotBlank() && it.title.contains(query, ignoreCase = true)
-      } ?: snapshot.todayTasks.firstOrNull { !it.isCompleted }
+      } ?: if (query.isBlank()) snapshot.todayTasks.firstOrNull { !it.isCompleted } else null
 
-      if (target != null) {
-        if (toTomorrow && newTime == null) {
-          coordinator.scheduleTaskForTomorrow(target)
+      if (target == null) {
+        val reply = "I couldn't find a pending task matching \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList())
+      }
+
+      if (toTomorrow && newTime == null) {
+        val res = coordinator.scheduleTaskForTomorrow(target)
+        return if (res.isSuccess) {
           val reply = "Rescheduled \"${target.title}\" to tomorrow."
-          return AlfredExecutionResult(
+          AlfredExecutionResult(
             replyText = reply,
             spokenText = reply,
             executedActions = listOf("Dashboard/Report · Moved \"${target.title}\" to tomorrow"),
             suggestedTab = VisionTab.Report,
           )
         } else {
-          val updatedDateKey = if (toTomorrow) DateKeyHelper.tomorrowKey() else target.dateKey
-          val updatedMins = newTime?.let { it.first * 60 + it.second } ?: target.scheduledMinutesOfDay
-          val updatedTimeText = newTime?.let { DateKeyHelper.formatFullTime12h(it.first, it.second) } ?: target.scheduledTimeText
-          coordinator.createOrUpdateTask(
-            target.copy(
-              dateKey = updatedDateKey,
-              scheduledMinutesOfDay = updatedMins,
-              scheduledTimeText = updatedTimeText,
-            ),
-          )
+          val err = res.exceptionOrNull()?.localizedMessage ?: "Unable to move task."
+          AlfredExecutionResult(replyText = "Could not move task: $err", spokenText = err, executedActions = emptyList())
+        }
+      } else {
+        val updatedDateKey = if (toTomorrow) DateKeyHelper.tomorrowKey() else target.dateKey
+        val updatedMins = newTime?.let { it.first * 60 + it.second } ?: target.scheduledMinutesOfDay
+        val updatedTimeText = newTime?.let { DateKeyHelper.formatFullTime12h(it.first, it.second) } ?: target.scheduledTimeText
+        val res = coordinator.createOrUpdateTask(
+          target.copy(
+            dateKey = updatedDateKey,
+            scheduledMinutesOfDay = updatedMins,
+            scheduledTimeText = updatedTimeText,
+          ),
+        )
+        return if (res.isSuccess) {
           val reply = "Rescheduled \"${target.title}\" to ${if (toTomorrow) "tomorrow " else ""}${updatedTimeText.ifBlank { "updated slot" }}."
-          return AlfredExecutionResult(
+          AlfredExecutionResult(
             replyText = reply,
             spokenText = reply,
             executedActions = listOf("Dashboard · Rescheduled \"${target.title}\""),
             suggestedTab = if (toTomorrow) VisionTab.Report else VisionTab.Dashboard,
           )
+        } else {
+          val err = res.exceptionOrNull()?.localizedMessage ?: "Unable to reschedule task."
+          AlfredExecutionResult(replyText = "Could not reschedule: $err", spokenText = err, executedActions = emptyList())
         }
       }
     }
@@ -516,15 +709,36 @@ object AlfredRuleEngine {
       val target = (snapshot.todayTasks + snapshot.tomorrowTasks).firstOrNull {
         query.isNotBlank() && it.title.contains(query, ignoreCase = true)
       }
-      if (target != null) {
-        coordinator.deleteTask(target.id)
-        val reply = "Deleted task \"${target.title}\"."
+      if (target == null) {
+        val reply = "I couldn't find a task matching \"$query\"."
+        return AlfredExecutionResult(replyText = reply, spokenText = reply, executedActions = emptyList(), suggestedTab = VisionTab.Dashboard)
+      }
+      if (requireConfirmation) {
         return AlfredExecutionResult(
+          replyText = "Confirm if you want to permanently delete task \"${target.title}\".",
+          spokenText = "Confirm deleting task ${target.title}.",
+          executedActions = emptyList(),
+          suggestedTab = VisionTab.Dashboard,
+          pendingConfirmation = PendingAlfredAction(
+            title = "Delete Task \"${target.title}\"?",
+            description = "This permanently removes \"${target.title}\" from your schedule.",
+            isDestructive = true,
+            suggestedTab = VisionTab.Dashboard,
+            payload = AlfredActionPayload.DeleteTask(target.id, target.title),
+          ),
+        )
+      }
+      val delRes = coordinator.deleteTask(target.id)
+      return if (delRes.isSuccess) {
+        val reply = "Deleted task \"${target.title}\"."
+        AlfredExecutionResult(
           replyText = reply,
           spokenText = reply,
           executedActions = listOf("Dashboard · Deleted \"${target.title}\""),
           suggestedTab = VisionTab.Dashboard,
         )
+      } else {
+        AlfredExecutionResult(replyText = "Could not delete task.", spokenText = "Could not delete task.", executedActions = emptyList())
       }
     }
 
@@ -534,7 +748,7 @@ object AlfredRuleEngine {
     val rec = AlfredAnnouncementEngine.recommendNextTask(snapshot)
     val offlineFallback = buildString {
       append("Offline Rule Engine active. Right now you have ${snapshot.todayProductivity.completedTasks}/${snapshot.todayProductivity.totalTasks} tasks completed (${snapshot.todayProductivity.productivityPercent}%), next focus recommendation: ${rec.headline}.\n\n")
-      append("Try commands like: \"Add task Revise Kotlin at 5 PM\", \"Complete next task\", \"Set alarm for 6:30 AM\", \"Start 25m study session\", \"Block Instagram\", or \"Read daily report\".")
+      append("Connect to the internet for full AI conversation, or try commands like: \"Add task Revise Kotlin at 5 PM\", \"Complete next task\", \"Set reminder for 6:30 PM\", \"Start 25m study session\", or \"Read daily report\".")
     }
     return AlfredExecutionResult(
       replyText = offlineFallback,
@@ -545,7 +759,6 @@ object AlfredRuleEngine {
 
   private fun parseHourMinute24(lowerText: String): Pair<Int, Int>? {
     val matches = timeRegex.findAll(lowerText).toList()
-    // Prefer a match with explicit am/pm or colon, skip duration matches like "25 minutes"
     val best = matches.firstOrNull { m ->
       val full = m.value
       val after = lowerText.substring(m.range.last + 1).trimStart()
@@ -576,7 +789,7 @@ object AlfredRuleEngine {
       .replace(Regex("""\b(daily|every day|to)\b""", RegexOption.IGNORE_CASE), "")
       .trim()
     return stripped.ifBlank {
-      if (isReminder) "ALFRED Reminder" else "ALFRED Wake-Up Alarm"
+      if (isReminder) "Study Reminder" else "Wake-Up Alarm"
     }
   }
 

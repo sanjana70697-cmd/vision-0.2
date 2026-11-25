@@ -56,6 +56,7 @@ data class AlarmEntity(
   val aiBriefingEnabled: Boolean = true,
   val snoozeMinutes: Int = 5,
   val nextTriggerMillis: Long = 0L,
+  val scheduledDateKey: String = "", // "yyyy-MM-dd" for one-time date-specific reminders/schedules
 )
 
 @Entity(tableName = "distracting_apps")
@@ -119,4 +120,29 @@ data class DailyProductivitySnapshotEntity(
   val yogaDone: Boolean,
   val skillMinutes: Int,
   val updatedAtMillis: Long = System.currentTimeMillis(),
+)
+
+@Entity(tableName = "activity_sessions")
+data class ActivitySessionEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val activityType: String, // "FOCUS", "YOGA", "SKILL"
+  val dateKey: String, // "yyyy-MM-dd"
+  val titleOrSkillName: String,
+  val notes: String = "",
+  val startTimeMillis: Long,
+  val endTimeMillis: Long,
+  val durationMinutes: Int,
+  val source: String = "TIMER", // "TIMER" or "MANUAL"
+  val createdAtMillis: Long = System.currentTimeMillis(),
+)
+
+@Entity(tableName = "alfred_chat_messages")
+data class AlfredChatMessageEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val conversationId: String,
+  val isUser: Boolean,
+  val text: String,
+  val sourceLabel: String = "ALFRED",
+  val executedActionsSerialized: String = "",
+  val timestampMillis: Long = System.currentTimeMillis(),
 )

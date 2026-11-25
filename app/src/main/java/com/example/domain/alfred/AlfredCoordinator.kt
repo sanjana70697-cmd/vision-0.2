@@ -1,7 +1,9 @@
 package com.example.domain.alfred
 
 import android.content.Context
+import com.example.data.local.ActivitySessionEntity
 import com.example.data.local.AlarmEntity
+import com.example.data.local.CarryForwardOutcome
 import com.example.data.local.DailyProductivitySnapshotEntity
 import com.example.data.local.DistractingAppEntity
 import com.example.data.local.FocusConfigEntity
@@ -57,9 +59,6 @@ class AlfredCoordinator(
       }
     }
 
-  override suspend fun toggleTaskPriority(task: TaskEntity): Result<Unit> =
-    repository.toggleTaskPriority(task)
-
   override suspend fun deleteTask(taskId: Long): Result<Unit> =
     repository.deleteTask(taskId).also {
       if (it.isSuccess) {
@@ -82,7 +81,14 @@ class AlfredCoordinator(
     defaultLabel: String,
     addMinutes: Int,
     completed: Boolean?,
-  ): Result<Unit> = repository.logHabitProgress(trackType, defaultLabel, addMinutes, completed)
+    updatedNotes: String?,
+  ): Result<Unit> = repository.logHabitProgress(
+    trackType = trackType,
+    defaultLabel = defaultLabel,
+    addMinutes = addMinutes,
+    markCompleted = completed,
+    updatedNotes = updatedNotes,
+  )
 
   // ---- ScheduleManagementPort ----
   override fun observeTomorrowTasks(): Flow<List<TaskEntity>> = repository.observeTomorrowTasks()
@@ -91,6 +97,9 @@ class AlfredCoordinator(
 
   override suspend fun scheduleTaskForTomorrow(task: TaskEntity): Result<Unit> =
     repository.moveTaskToTomorrow(task)
+
+  override suspend fun carryForwardTasksToTomorrow(tasks: List<TaskEntity>): Result<CarryForwardOutcome> =
+    repository.carryForwardTasksToTomorrow(tasks)
 
   override suspend fun updateNextDayPlanNote(note: String): Result<FocusConfigEntity> =
     repository.updateFocusConfig { it.copy(nextDayPlanNote = note) }
@@ -150,6 +159,7 @@ class AlfredCoordinator(
       it.copy(
         studyModeEnabled = enabled,
         studyWarningActive = if (!enabled) false else it.studyWarningActive,
+        studyWarningMessage = if (!enabled) "" else it.studyWarningMessage,
       )
     }.map { nextCfg ->
       if (!enabled) FocusEnforcementPrefs.setYoutubeRestrictedNow(appContext, false)
@@ -227,8 +237,12 @@ class AlfredCoordinator(
     FocusMonitorService.resetFocus(appContext, plannedMinutes)
   }
 
-  override fun triggerStudyModeWarningPreview() {
-    FocusMonitorService.triggerStudyWarningCheck(appContext)
+  override fun startStudySession(plannedMinutes: Int) {
+    FocusMonitorService.startStudySession(appContext, plannedMinutes)
+  }
+
+  override fun stopStudySession() {
+    FocusMonitorService.stopStudySession(appContext)
   }
 
   override fun dismissStudyModeWarning() {
@@ -241,6 +255,22 @@ class AlfredCoordinator(
 
   override fun observeWeeklySnapshots(): Flow<List<Pair<String, DailyProductivitySnapshotEntity?>>> =
     repository.observeWeeklySnapshots()
+
+  override fun observeTodayActivitySessions(): Flow<List<ActivitySessionEntity>> =
+    repository.observeTodayActivitySessions()
+
+  override fun observeRecentActivitySessions(): Flow<List<ActivitySessionEntity>> =
+    repository.observeRecentActivitySessions()
+
+  override suspend fun saveActivitySession(session: ActivitySessionEntity): Result<Long> =
+    repository.saveActivitySession(session).also {
+      if (it.isSuccess) ProductivitySyncWorker.enqueuePeriodicAndImmediate(appContext)
+    }
+
+  override suspend fun deleteActivitySession(sessionId: Long): Result<Unit> =
+    repository.deleteActivitySession(sessionId).also {
+      if (it.isSuccess) ProductivitySyncWorker.enqueuePeriodicAndImmediate(appContext)
+    }
 
   override suspend fun syncProductivitySnapshot(): Result<Unit> =
     repository.syncTodaySnapshot()

@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,13 +27,14 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SelfImprovement
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.TaskAlt
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -43,8 +46,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -64,36 +69,54 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.local.ActivitySessionEntity
 import com.example.data.local.DateKeyHelper
 import com.example.data.local.GoalEntity
+import com.example.data.local.HabitLogEntity
 import com.example.data.local.ProductivitySummary
 import com.example.data.local.TaskEntity
+import com.example.ui.ActivityTimerUiState
+import com.example.ui.components.ActivitySessionEditorSheet
 import com.example.ui.components.CentralAiBannerCard
+import com.example.ui.components.SKILL_SUGGESTION_PRESETS
 import com.example.ui.components.VisionTopBar
 import com.example.ui.theme.LocalVisionPalette
 import com.example.ui.theme.OliveMossAccent
 import com.example.ui.theme.OliveMossDeep
 import com.example.ui.theme.PlayfairDisplayFamily
-import com.example.ui.theme.SandstoneInk
-import com.example.ui.theme.WarmSandstone
+import com.example.ui.theme.VisionDangerRed
+import com.example.ui.theme.visionPrimaryCardCheckboxColors
+import com.example.ui.theme.visionPrimaryCardFieldColors
 
 @Composable
 fun DashboardScreen(
   tasks: List<TaskEntity>,
   goals: List<GoalEntity>,
+  todayHabits: List<HabitLogEntity>,
+  todayActivitySessions: List<ActivitySessionEntity>,
   productivity: ProductivitySummary,
   yogaStreakDays: Int,
+  yogaTimer: ActivityTimerUiState,
+  skillTimer: ActivityTimerUiState,
   onToggleTask: (TaskEntity) -> Unit,
-  onTogglePriority: (TaskEntity) -> Unit,
   onSaveTask: (TaskEntity) -> Unit,
   onDeleteTask: (Long) -> Unit,
   onSaveGoal: (GoalEntity) -> Unit,
   onIncrementGoal: (GoalEntity, Int) -> Unit,
   onDeleteGoal: (Long) -> Unit,
-  onLogYoga: (Int, Boolean?) -> Unit,
-  onLogSkill: (Int, Boolean?) -> Unit,
+  onStartYogaTimer: (String, String) -> Unit,
+  onPauseYogaTimer: () -> Unit,
+  onResumeYogaTimer: () -> Unit,
+  onFinishYogaTimer: (String?) -> Unit,
+  onStartSkillTimer: (String, String) -> Unit,
+  onPauseSkillTimer: () -> Unit,
+  onResumeSkillTimer: () -> Unit,
+  onFinishSkillTimer: (String?) -> Unit,
+  onSaveActivitySession: (ActivitySessionEntity) -> Unit,
+  onDeleteActivitySession: (Long) -> Unit,
   onOpenAiSheet: () -> Unit,
   onOpenMenu: () -> Unit,
   onNavigateToReport: () -> Unit,
@@ -106,13 +129,23 @@ fun DashboardScreen(
   var editingGoal by remember { mutableStateOf<GoalEntity?>(null) }
   var showGoalSheet by remember { mutableStateOf(false) }
 
-  val priorityTasks = remember(tasks) { tasks.filter { it.isPriority } }
+  var activityEditorTarget by remember { mutableStateOf<Pair<ActivitySessionEntity?, String>?>(null) }
+  var deleteSessionConfirm by remember { mutableStateOf<ActivitySessionEntity?>(null) }
+
   val scheduleTasks = remember(tasks, showPendingOnly) {
-    val base = if (showPendingOnly) tasks.filter { !it.isCompleted } else tasks
-    base
+    if (showPendingOnly) tasks.filter { !it.isCompleted } else tasks
   }
   val upcomingTasks = remember(tasks) { tasks.filter { !it.isCompleted && it.scheduledMinutesOfDay >= 0 } }
   val progressRatio = (productivity.productivityPercent / 100f).coerceIn(0f, 1f)
+
+  val yogaHabit = remember(todayHabits) { todayHabits.firstOrNull { it.trackType == "YOGA_EXERCISE" } }
+  val skillHabit = remember(todayHabits) { todayHabits.firstOrNull { it.trackType == "SKILL_DEV" } }
+  val yogaSessionsToday = remember(todayActivitySessions) {
+    todayActivitySessions.filter { it.activityType == "YOGA" }
+  }
+  val skillSessionsToday = remember(todayActivitySessions) {
+    todayActivitySessions.filter { it.activityType == "SKILL" }
+  }
 
   Column(modifier = modifier.fillMaxSize()) {
     VisionTopBar(
@@ -167,6 +200,7 @@ fun DashboardScreen(
               .testTag("daily_progress_card"),
             shape = RoundedCornerShape(22.dp),
             color = palette.primaryCard,
+            contentColor = palette.onPrimaryCard,
             border = BorderStroke(1.dp, palette.cardBorder),
           ) {
             Column(
@@ -186,7 +220,7 @@ fun DashboardScreen(
                 Icon(
                   imageVector = Icons.Filled.CheckCircle,
                   contentDescription = "Daily progress",
-                  tint = OliveMossAccent,
+                  tint = palette.accentOnPrimaryCard,
                   modifier = Modifier.size(22.dp),
                 )
               }
@@ -201,7 +235,7 @@ fun DashboardScreen(
                   .fillMaxWidth()
                   .height(8.dp)
                   .clip(RoundedCornerShape(50)),
-                color = OliveMossAccent,
+                color = palette.accentOnPrimaryCard,
                 trackColor = palette.secondaryCard,
                 strokeCap = StrokeCap.Round,
               )
@@ -214,6 +248,7 @@ fun DashboardScreen(
               .testTag("tasks_summary_card"),
             shape = RoundedCornerShape(22.dp),
             color = palette.primaryCard,
+            contentColor = palette.onPrimaryCard,
             border = BorderStroke(1.dp, palette.cardBorder),
           ) {
             Column(
@@ -238,7 +273,7 @@ fun DashboardScreen(
                   text = "Done: ${productivity.completedTasks}",
                   style = MaterialTheme.typography.bodySmall,
                   fontWeight = FontWeight.SemiBold,
-                  color = OliveMossAccent,
+                  color = palette.accentOnPrimaryCard,
                 )
                 Text(
                   text = "Pending: ${productivity.pendingTasks}",
@@ -251,99 +286,7 @@ fun DashboardScreen(
         }
       }
 
-      // Today's Priorities
-      item {
-        Surface(
-          modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 600.dp)
-            .testTag("todays_priorities_card"),
-          shape = RoundedCornerShape(22.dp),
-          color = palette.darkGlassCard,
-          border = BorderStroke(1.dp, palette.darkCardBorder),
-        ) {
-          Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.TaskAlt,
-                  contentDescription = "Today's Priorities",
-                  tint = palette.accent,
-                  modifier = Modifier.size(18.dp),
-                )
-                Text(
-                  text = "Today's Priorities",
-                  style = MaterialTheme.typography.titleMedium,
-                  color = palette.onDarkCard,
-                )
-              }
-              Text(
-                text = "${priorityTasks.count { it.isCompleted }}/${priorityTasks.size} Done",
-                style = MaterialTheme.typography.labelMedium,
-                color = palette.onDarkCardMuted,
-              )
-            }
-
-            if (priorityTasks.isEmpty()) {
-              Text(
-                text = "Tap the star on any task below to mark it as a priority.",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.onDarkCardMuted,
-              )
-            } else {
-              priorityTasks.forEach { item ->
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onToggleTask(item) }
-                    .minimumInteractiveComponentSize()
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                  Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                  ) {
-                    Icon(
-                      imageVector = if (item.isCompleted) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                      contentDescription = if (item.isCompleted) "Completed" else "Pending",
-                      tint = if (item.isCompleted) palette.accent else palette.onDarkCardMuted,
-                      modifier = Modifier.size(20.dp),
-                    )
-                    Text(
-                      text = item.title,
-                      style = MaterialTheme.typography.bodyMedium.copy(
-                        textDecoration = if (item.isCompleted) TextDecoration.LineThrough else TextDecoration.None,
-                      ),
-                      color = if (item.isCompleted) palette.onDarkCardMuted else palette.onDarkCard,
-                    )
-                  }
-                  Text(
-                    text = item.scheduledTimeText.ifBlank { item.category },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.onDarkCardMuted,
-                  )
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Today's Schedule, Routines & Task CRUD (Warm Sandstone)
+      // Today's Schedule, Routines & Task CRUD
       item {
         Surface(
           modifier = Modifier
@@ -352,6 +295,7 @@ fun DashboardScreen(
             .testTag("todays_schedule_card"),
           shape = RoundedCornerShape(22.dp),
           color = palette.primaryCard,
+          contentColor = palette.onPrimaryCard,
           border = BorderStroke(1.dp, palette.cardBorder),
         ) {
           Column(
@@ -363,7 +307,7 @@ fun DashboardScreen(
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Column {
+              Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(
                   text = "Today's Schedule & Tasks",
                   style = MaterialTheme.typography.titleMedium,
@@ -379,6 +323,7 @@ fun DashboardScreen(
                 Surface(
                   shape = RoundedCornerShape(50),
                   color = if (showPendingOnly) OliveMossAccent else palette.secondaryCard,
+                  border = BorderStroke(1.dp, palette.cardBorder),
                   onClick = { showPendingOnly = !showPendingOnly },
                   modifier = Modifier.testTag("filter_pending_button"),
                 ) {
@@ -386,7 +331,7 @@ fun DashboardScreen(
                     text = if (showPendingOnly) "Pending" else "All",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (showPendingOnly) Color.White else palette.onPrimaryCard,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                   )
                 }
                 Surface(
@@ -399,7 +344,7 @@ fun DashboardScreen(
                   modifier = Modifier.testTag("add_task_button"),
                 ) {
                   Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                   ) {
@@ -421,7 +366,8 @@ fun DashboardScreen(
 
             if (scheduleTasks.isEmpty()) {
               Text(
-                text = if (showPendingOnly) "All scheduled tasks are completed!" else "No tasks yet. Tap Add to create your first task or daily routine.",
+                text = if (showPendingOnly) "All scheduled tasks are completed!"
+                else "No tasks yet. Tap Add to create your first task or daily routine.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = palette.onPrimaryCardMuted,
                 modifier = Modifier.padding(vertical = 8.dp),
@@ -433,23 +379,23 @@ fun DashboardScreen(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .background(
-                      if (!entry.isCompleted) palette.secondaryCard.copy(alpha = 0.55f)
+                      if (!entry.isCompleted) palette.secondaryCard.copy(alpha = 0.72f)
                       else palette.primaryCard,
                     )
                     .clickable { onToggleTask(entry) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                   Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.weight(1f),
                   ) {
                     Icon(
                       imageVector = if (entry.isCompleted) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
                       contentDescription = if (entry.isCompleted) "Completed" else "Pending",
-                      tint = if (entry.isCompleted) OliveMossAccent else palette.onPrimaryCardMuted,
+                      tint = if (entry.isCompleted) palette.accentOnPrimaryCard else palette.onPrimaryCardMuted,
                       modifier = Modifier.size(22.dp),
                     )
                     Column(modifier = Modifier.weight(1f)) {
@@ -458,7 +404,7 @@ fun DashboardScreen(
                         style = MaterialTheme.typography.titleSmall.copy(
                           textDecoration = if (entry.isCompleted) TextDecoration.LineThrough else TextDecoration.None,
                         ),
-                        color = palette.onPrimaryCard,
+                        color = if (entry.isCompleted) palette.onPrimaryCardMuted else palette.onPrimaryCard,
                       )
                       Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -468,7 +414,7 @@ fun DashboardScreen(
                           Icon(
                             imageVector = Icons.Filled.Schedule,
                             contentDescription = null,
-                            tint = OliveMossAccent,
+                            tint = palette.accentOnPrimaryCard,
                             modifier = Modifier.size(12.dp),
                           )
                           Text(
@@ -489,32 +435,19 @@ fun DashboardScreen(
                     }
                   }
 
-                  Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                      onClick = { onTogglePriority(entry) },
-                      modifier = Modifier.size(34.dp),
-                    ) {
-                      Icon(
-                        imageVector = if (entry.isPriority) Icons.Filled.Star else Icons.Outlined.StarBorder,
-                        contentDescription = "Toggle Priority",
-                        tint = if (entry.isPriority) Color(0xFFC47F2D) else palette.onPrimaryCardMuted,
-                        modifier = Modifier.size(18.dp),
-                      )
-                    }
-                    IconButton(
-                      onClick = {
-                        editingTask = entry
-                        showTaskSheet = true
-                      },
-                      modifier = Modifier.size(34.dp),
-                    ) {
-                      Icon(
-                        imageVector = Icons.Filled.Edit,
-                        contentDescription = "Edit task",
-                        tint = palette.onPrimaryCardMuted,
-                        modifier = Modifier.size(17.dp),
-                      )
-                    }
+                  IconButton(
+                    onClick = {
+                      editingTask = entry
+                      showTaskSheet = true
+                    },
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Edit,
+                      contentDescription = "Edit task",
+                      tint = palette.onPrimaryCard,
+                      modifier = Modifier.size(18.dp),
+                    )
                   }
                 }
               }
@@ -523,154 +456,43 @@ fun DashboardScreen(
         }
       }
 
-      // Morning Yoga & Exercise + Skill Development Tracking (Interactive Room Habit Logs)
+      // Morning Yoga & Exercise — Real Timer + Saved Session Records
       item {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 600.dp),
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-          Surface(
-            modifier = Modifier
-              .weight(1f)
-              .testTag("morning_yoga_card"),
-            shape = RoundedCornerShape(20.dp),
-            color = palette.darkGlassCard,
-            border = BorderStroke(1.dp, palette.darkCardBorder),
-          ) {
-            Column(
-              modifier = Modifier.padding(14.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(palette.accent.copy(alpha = 0.25f)),
-                  contentAlignment = Alignment.Center,
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.SelfImprovement,
-                    contentDescription = "Morning Yoga and Exercise",
-                    tint = palette.onDarkCard,
-                    modifier = Modifier.size(18.dp),
-                  )
-                }
-                Text(
-                  text = "Morning Yoga",
-                  style = MaterialTheme.typography.titleSmall,
-                  color = palette.onDarkCard,
-                )
-              }
-              Text(
-                text = "${productivity.yogaMinutesToday}m today · $yogaStreakDays total sessions",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.onDarkCardMuted,
-              )
-              Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Surface(
-                  shape = RoundedCornerShape(50),
-                  color = OliveMossAccent,
-                  onClick = { onLogYoga(15, true) },
-                ) {
-                  Text(
-                    text = "+15m",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                  )
-                }
-                Surface(
-                  shape = RoundedCornerShape(50),
-                  color = if (productivity.yogaDoneToday) OliveMossAccent.copy(alpha = 0.3f) else palette.primaryCard.copy(alpha = 0.14f),
-                  onClick = { onLogYoga(0, !productivity.yogaDoneToday) },
-                ) {
-                  Text(
-                    text = if (productivity.yogaDoneToday) "Done" else "Mark Done",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.onDarkCard,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                  )
-                }
-              }
-            }
-          }
+        MorningYogaSessionCard(
+          loggedMinutes = productivity.yogaMinutesToday,
+          targetMinutes = 30,
+          streakDays = yogaStreakDays,
+          timer = yogaTimer,
+          savedSessions = yogaSessionsToday,
+          fallbackNotes = yogaHabit?.notes.orEmpty(),
+          onStart = { notes -> onStartYogaTimer("Morning Yoga & Exercise", notes) },
+          onPause = onPauseYogaTimer,
+          onResume = onResumeYogaTimer,
+          onFinish = onFinishYogaTimer,
+          onLogManual = { activityEditorTarget = null to "YOGA" },
+          onEditSession = { session -> activityEditorTarget = session to "YOGA" },
+          onDeleteSession = { session -> deleteSessionConfirm = session },
+          modifier = Modifier.widthIn(max = 600.dp),
+        )
+      }
 
-          Surface(
-            modifier = Modifier
-              .weight(1f)
-              .testTag("skill_development_card"),
-            shape = RoundedCornerShape(20.dp),
-            color = palette.darkGlassCard,
-            border = BorderStroke(1.dp, palette.darkCardBorder),
-          ) {
-            Column(
-              modifier = Modifier.padding(14.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(palette.accent.copy(alpha = 0.25f)),
-                  contentAlignment = Alignment.Center,
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Code,
-                    contentDescription = "Skill Development",
-                    tint = palette.onDarkCard,
-                    modifier = Modifier.size(18.dp),
-                  )
-                }
-                Text(
-                  text = "Skill Dev",
-                  style = MaterialTheme.typography.titleSmall,
-                  color = palette.onDarkCard,
-                )
-              }
-              Text(
-                text = "${productivity.skillMinutesToday}m logged today",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.onDarkCardMuted,
-              )
-              Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Surface(
-                  shape = RoundedCornerShape(50),
-                  color = OliveMossAccent,
-                  onClick = { onLogSkill(30, true) },
-                ) {
-                  Text(
-                    text = "+30m",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                  )
-                }
-                Surface(
-                  shape = RoundedCornerShape(50),
-                  color = if (productivity.skillDoneToday) OliveMossAccent.copy(alpha = 0.3f) else palette.primaryCard.copy(alpha = 0.14f),
-                  onClick = { onLogSkill(0, !productivity.skillDoneToday) },
-                ) {
-                  Text(
-                    text = if (productivity.skillDoneToday) "Done" else "Complete",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.onDarkCard,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                  )
-                }
-              }
-            }
-          }
-        }
+      // Skill Development — Selected Skill + Real Timer + Completed Sessions Today
+      item {
+        SkillDevelopmentSessionCard(
+          loggedMinutes = productivity.skillMinutesToday,
+          targetMinutes = 60,
+          timer = skillTimer,
+          savedSessions = skillSessionsToday,
+          fallbackNotes = skillHabit?.notes.orEmpty(),
+          onStart = { skillName, notes -> onStartSkillTimer(skillName, notes) },
+          onPause = onPauseSkillTimer,
+          onResume = onResumeSkillTimer,
+          onFinish = onFinishSkillTimer,
+          onLogManual = { activityEditorTarget = null to "SKILL" },
+          onEditSession = { session -> activityEditorTarget = session to "SKILL" },
+          onDeleteSession = { session -> deleteSessionConfirm = session },
+          modifier = Modifier.widthIn(max = 600.dp),
+        )
       }
 
       // Personal Goals (Create, Adjust Progress, Edit, Delete)
@@ -682,6 +504,7 @@ fun DashboardScreen(
             .testTag("personal_goals_card"),
           shape = RoundedCornerShape(22.dp),
           color = palette.primaryCard,
+          contentColor = palette.onPrimaryCard,
           border = BorderStroke(1.dp, palette.cardBorder),
         ) {
           Column(
@@ -700,7 +523,7 @@ fun DashboardScreen(
                 Icon(
                   imageVector = Icons.Filled.Flag,
                   contentDescription = "Personal Goals",
-                  tint = OliveMossAccent,
+                  tint = palette.accentOnPrimaryCard,
                   modifier = Modifier.size(20.dp),
                 )
                 Text(
@@ -721,7 +544,7 @@ fun DashboardScreen(
                 modifier = Modifier.testTag("add_goal_button"),
               ) {
                 Row(
-                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -731,71 +554,80 @@ fun DashboardScreen(
               }
             }
 
-            goals.forEach { goal ->
-              val ratio = if (goal.targetValue > 0) {
-                (goal.currentValue.toFloat() / goal.targetValue.toFloat()).coerceIn(0f, 1f)
-              } else 0f
-              Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically,
-                ) {
-                  Column(
-                    modifier = Modifier
-                      .weight(1f)
-                      .clickable {
-                        editingGoal = goal
-                        showGoalSheet = true
-                      },
-                  ) {
-                    Text(
-                      text = goal.title,
-                      style = MaterialTheme.typography.titleSmall,
-                      color = palette.onPrimaryCard,
-                    )
-                    Text(
-                      text = "${goal.currentValue}/${goal.targetValue} ${goal.unit} · ${goal.subtitle}",
-                      style = MaterialTheme.typography.bodySmall,
-                      color = palette.onPrimaryCardMuted,
-                    )
-                  }
+            if (goals.isEmpty()) {
+              Text(
+                text = "No personal goals added yet. Tap New Goal to set a milestone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.onPrimaryCardMuted,
+              )
+            } else {
+              goals.forEach { goal ->
+                val ratio = if (goal.targetValue > 0) {
+                  (goal.currentValue.toFloat() / goal.targetValue.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                   Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                   ) {
-                    Surface(
-                      shape = CircleShape,
-                      color = palette.secondaryCard,
-                      onClick = { onIncrementGoal(goal, -1) },
-                      modifier = Modifier.size(28.dp),
+                    Column(
+                      modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                          editingGoal = goal
+                          showGoalSheet = true
+                        },
                     ) {
-                      Box(contentAlignment = Alignment.Center) {
-                        Text("-", style = MaterialTheme.typography.titleSmall, color = palette.onPrimaryCard)
-                      }
+                      Text(
+                        text = goal.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = palette.onPrimaryCard,
+                      )
+                      Text(
+                        text = "${goal.currentValue}/${goal.targetValue} ${goal.unit} · ${goal.subtitle}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.onPrimaryCardMuted,
+                      )
                     }
-                    Surface(
-                      shape = CircleShape,
-                      color = OliveMossAccent,
-                      onClick = { onIncrementGoal(goal, 1) },
-                      modifier = Modifier.size(28.dp),
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                      Box(contentAlignment = Alignment.Center) {
-                        Text("+", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                      Surface(
+                        shape = CircleShape,
+                        color = palette.secondaryCard,
+                        border = BorderStroke(1.dp, palette.cardBorder),
+                        onClick = { onIncrementGoal(goal, -1) },
+                        modifier = Modifier.size(34.dp),
+                      ) {
+                        Box(contentAlignment = Alignment.Center) {
+                          Text("-", style = MaterialTheme.typography.titleSmall, color = palette.onPrimaryCard)
+                        }
+                      }
+                      Surface(
+                        shape = CircleShape,
+                        color = OliveMossAccent,
+                        onClick = { onIncrementGoal(goal, 1) },
+                        modifier = Modifier.size(34.dp),
+                      ) {
+                        Box(contentAlignment = Alignment.Center) {
+                          Text("+", style = MaterialTheme.typography.titleSmall, color = Color.White)
+                        }
                       }
                     }
                   }
+                  LinearProgressIndicator(
+                    progress = { ratio },
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(7.dp)
+                      .clip(RoundedCornerShape(50)),
+                    color = palette.accentOnPrimaryCard,
+                    trackColor = palette.secondaryCard,
+                    strokeCap = StrokeCap.Round,
+                  )
                 }
-                LinearProgressIndicator(
-                  progress = { ratio },
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .height(7.dp)
-                    .clip(RoundedCornerShape(50)),
-                  color = OliveMossAccent,
-                  trackColor = palette.secondaryCard,
-                  strokeCap = StrokeCap.Round,
-                )
               }
             }
           }
@@ -833,6 +665,713 @@ fun DashboardScreen(
       onDismiss = { showGoalSheet = false },
     )
   }
+
+  activityEditorTarget?.let { (session, defaultType) ->
+    ActivitySessionEditorSheet(
+      initialSession = session,
+      defaultType = session?.activityType ?: defaultType,
+      allowCategorySwitch = false,
+      onSave = { saved ->
+        onSaveActivitySession(saved)
+        activityEditorTarget = null
+      },
+      onDelete = { id ->
+        onDeleteActivitySession(id)
+        activityEditorTarget = null
+      },
+      onDismiss = { activityEditorTarget = null },
+    )
+  }
+
+  deleteSessionConfirm?.let { session ->
+    AlertDialog(
+      onDismissRequest = { deleteSessionConfirm = null },
+      title = { Text("Delete Session?") },
+      text = {
+        Text("Remove \"${session.titleOrSkillName}\" (${session.durationMinutes}m) from today's records?")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            onDeleteActivitySession(session.id)
+            deleteSessionConfirm = null
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = VisionDangerRed),
+        ) {
+          Text("Delete", color = Color.White)
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { deleteSessionConfirm = null }) {
+          Text("Cancel")
+        }
+      },
+    )
+  }
+}
+
+@Composable
+private fun MorningYogaSessionCard(
+  loggedMinutes: Int,
+  targetMinutes: Int,
+  streakDays: Int,
+  timer: ActivityTimerUiState,
+  savedSessions: List<ActivitySessionEntity>,
+  fallbackNotes: String,
+  onStart: (String) -> Unit,
+  onPause: () -> Unit,
+  onResume: () -> Unit,
+  onFinish: (String?) -> Unit,
+  onLogManual: () -> Unit,
+  onEditSession: (ActivitySessionEntity) -> Unit,
+  onDeleteSession: (ActivitySessionEntity) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalVisionPalette.current
+  var notesDraft by remember(timer.isActive, fallbackNotes) {
+    mutableStateOf(if (timer.isActive) timer.notes else fallbackNotes)
+  }
+  val ratio = (loggedMinutes.toFloat() / targetMinutes.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+  val fieldColors = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = palette.onDarkCard,
+    unfocusedTextColor = palette.onDarkCard,
+    focusedLabelColor = palette.accentOnDarkCard,
+    unfocusedLabelColor = palette.onDarkCardMuted,
+    focusedPlaceholderColor = palette.onDarkCardMuted,
+    unfocusedPlaceholderColor = palette.onDarkCardMuted,
+    focusedBorderColor = palette.accentOnDarkCard,
+    unfocusedBorderColor = palette.darkCardBorder,
+    cursorColor = palette.accentOnDarkCard,
+  )
+
+  Surface(
+    modifier = modifier
+      .fillMaxWidth()
+      .testTag("morning_yoga_card"),
+    shape = RoundedCornerShape(22.dp),
+    color = palette.darkGlassCard,
+    contentColor = palette.onDarkCard,
+    border = BorderStroke(1.dp, palette.darkCardBorder),
+  ) {
+    Column(
+      modifier = Modifier.padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Row(
+          modifier = Modifier.weight(1f).padding(end = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Box(
+            modifier = Modifier
+              .size(40.dp)
+              .clip(CircleShape)
+              .background(palette.accent.copy(alpha = 0.24f)),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.SelfImprovement,
+              contentDescription = "Morning Yoga & Exercise",
+              tint = palette.accentOnDarkCard,
+              modifier = Modifier.size(22.dp),
+            )
+          }
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Morning Yoga & Exercise",
+              style = MaterialTheme.typography.titleMedium,
+              color = palette.onDarkCard,
+            )
+            Text(
+              text = "${DateKeyHelper.formatMinutesSummary(loggedMinutes)} today · $streakDays active day(s)",
+              style = MaterialTheme.typography.bodySmall,
+              color = palette.onDarkCardMuted,
+            )
+          }
+        }
+
+        Surface(
+          shape = RoundedCornerShape(50),
+          color = when {
+            timer.isRunning -> OliveMossAccent
+            timer.isActive -> Color(0xFFB36B00)
+            loggedMinutes > 0 -> OliveMossAccent
+            else -> palette.secondaryCard.copy(alpha = if (palette.isDarkMode) 0.2f else 0.7f)
+          },
+          border = BorderStroke(1.dp, if (timer.isActive || loggedMinutes > 0) OliveMossAccent else palette.darkCardBorder),
+        ) {
+          Text(
+            text = when {
+              timer.isRunning -> "Running · ${DateKeyHelper.formatElapsedClock(timer.elapsedSeconds)}"
+              timer.isActive -> "Paused · ${DateKeyHelper.formatElapsedClock(timer.elapsedSeconds)}"
+              loggedMinutes > 0 -> "${loggedMinutes}m Logged"
+              else -> "0/${targetMinutes}m"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (timer.isActive || loggedMinutes > 0) Color.White else palette.onDarkCard,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+          )
+        }
+      }
+
+      LinearProgressIndicator(
+        progress = { ratio },
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(7.dp)
+          .clip(RoundedCornerShape(50)),
+        color = palette.accentOnDarkCard,
+        trackColor = palette.onDarkCard.copy(alpha = 0.16f),
+        strokeCap = StrokeCap.Round,
+      )
+
+      Text(
+        text = "Guided practice: 10m Surya Namaskar · 10m deep stretching · 5m Pranayama breathing.",
+        style = MaterialTheme.typography.bodySmall,
+        color = palette.onDarkCardMuted,
+      )
+
+      if (timer.isActive) {
+        Surface(
+          shape = RoundedCornerShape(16.dp),
+          color = palette.onDarkCard.copy(alpha = 0.08f),
+          border = BorderStroke(1.dp, palette.accentOnDarkCard.copy(alpha = 0.55f)),
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text = if (timer.isRunning) "Yoga Session Active" else "Yoga Session Paused",
+                style = MaterialTheme.typography.labelLarge,
+                color = palette.accentOnDarkCard,
+              )
+              Text(
+                text = DateKeyHelper.formatElapsedClock(timer.elapsedSeconds),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = palette.onDarkCard,
+                modifier = Modifier.testTag("yoga_timer_clock"),
+              )
+            }
+
+            OutlinedTextField(
+              value = notesDraft,
+              onValueChange = { notesDraft = it },
+              label = { Text("Practice notes (optional)") },
+              placeholder = { Text("e.g., Surya Namaskar & pranayama") },
+              colors = fieldColors,
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth(),
+            )
+          }
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        if (!timer.isActive) {
+          Button(
+            onClick = { onStart(notesDraft) },
+            colors = ButtonDefaults.buttonColors(containerColor = OliveMossAccent),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .weight(1f)
+              .height(48.dp)
+              .testTag("start_yoga_button"),
+          ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Start Yoga", color = Color.White, style = MaterialTheme.typography.labelLarge)
+          }
+          OutlinedButton(
+            onClick = onLogManual,
+            border = BorderStroke(1.dp, palette.darkCardBorder),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .height(48.dp)
+              .testTag("log_yoga_manual_button"),
+          ) {
+            Icon(Icons.Filled.Add, contentDescription = "Log Yoga manually", tint = palette.accentOnDarkCard, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.size(4.dp))
+            Text("Log", color = palette.onDarkCard)
+          }
+        } else {
+          if (timer.isRunning) {
+            OutlinedButton(
+              onClick = onPause,
+              border = BorderStroke(1.dp, palette.accentOnDarkCard),
+              shape = RoundedCornerShape(50),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("pause_yoga_button"),
+            ) {
+              Icon(Icons.Filled.Pause, contentDescription = null, tint = palette.onDarkCard, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.size(6.dp))
+              Text("Pause", color = palette.onDarkCard)
+            }
+          } else {
+            Button(
+              onClick = onResume,
+              colors = ButtonDefaults.buttonColors(containerColor = OliveMossAccent),
+              shape = RoundedCornerShape(50),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("resume_yoga_button"),
+            ) {
+              Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.size(6.dp))
+              Text("Resume", color = Color.White)
+            }
+          }
+
+          Button(
+            onClick = { onFinish(notesDraft) },
+            colors = ButtonDefaults.buttonColors(containerColor = OliveMossDeep),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .weight(1f)
+              .height(48.dp)
+              .testTag("finish_yoga_button"),
+          ) {
+            Icon(Icons.Filled.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Finish Yoga", color = Color.White)
+          }
+        }
+      }
+
+      if (savedSessions.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text(
+            text = "Today's Yoga Sessions (${savedSessions.size})",
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.accentOnDarkCard,
+          )
+          savedSessions.forEach { session ->
+            SavedActivityMiniRow(
+              session = session,
+              onEdit = { onEditSession(session) },
+              onDelete = { onDeleteSession(session) },
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SkillDevelopmentSessionCard(
+  loggedMinutes: Int,
+  targetMinutes: Int,
+  timer: ActivityTimerUiState,
+  savedSessions: List<ActivitySessionEntity>,
+  fallbackNotes: String,
+  onStart: (String, String) -> Unit,
+  onPause: () -> Unit,
+  onResume: () -> Unit,
+  onFinish: (String?) -> Unit,
+  onLogManual: () -> Unit,
+  onEditSession: (ActivitySessionEntity) -> Unit,
+  onDeleteSession: (ActivitySessionEntity) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val palette = LocalVisionPalette.current
+  var skillInput by remember(timer.isActive, timer.titleOrSkillName) {
+    mutableStateOf(
+      if (timer.isActive && timer.titleOrSkillName.isNotBlank()) timer.titleOrSkillName
+      else "Web Development",
+    )
+  }
+  var skillError by remember { mutableStateOf<String?>(null) }
+  var notesDraft by remember(timer.isActive, fallbackNotes) {
+    mutableStateOf(if (timer.isActive) timer.notes else "")
+  }
+  val ratio = (loggedMinutes.toFloat() / targetMinutes.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+  val fieldColors = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = palette.onDarkCard,
+    unfocusedTextColor = palette.onDarkCard,
+    focusedLabelColor = palette.accentOnDarkCard,
+    unfocusedLabelColor = palette.onDarkCardMuted,
+    focusedPlaceholderColor = palette.onDarkCardMuted,
+    unfocusedPlaceholderColor = palette.onDarkCardMuted,
+    focusedBorderColor = palette.accentOnDarkCard,
+    unfocusedBorderColor = palette.darkCardBorder,
+    cursorColor = palette.accentOnDarkCard,
+    errorTextColor = palette.onDarkCard,
+    errorBorderColor = Color(0xFFFF8A80),
+    errorLabelColor = Color(0xFFFF8A80),
+  )
+
+  Surface(
+    modifier = modifier
+      .fillMaxWidth()
+      .testTag("skill_development_card"),
+    shape = RoundedCornerShape(22.dp),
+    color = palette.darkGlassCard,
+    contentColor = palette.onDarkCard,
+    border = BorderStroke(1.dp, palette.darkCardBorder),
+  ) {
+    Column(
+      modifier = Modifier.padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Row(
+          modifier = Modifier.weight(1f).padding(end = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Box(
+            modifier = Modifier
+              .size(40.dp)
+              .clip(CircleShape)
+              .background(palette.accent.copy(alpha = 0.24f)),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Code,
+              contentDescription = "Skill Development",
+              tint = palette.accentOnDarkCard,
+              modifier = Modifier.size(22.dp),
+            )
+          }
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Skill Development",
+              style = MaterialTheme.typography.titleMedium,
+              color = palette.onDarkCard,
+            )
+            Text(
+              text = "${DateKeyHelper.formatMinutesSummary(loggedMinutes)} logged today · Select skill & track live",
+              style = MaterialTheme.typography.bodySmall,
+              color = palette.onDarkCardMuted,
+            )
+          }
+        }
+
+        Surface(
+          shape = RoundedCornerShape(50),
+          color = when {
+            timer.isRunning -> OliveMossAccent
+            timer.isActive -> Color(0xFFB36B00)
+            loggedMinutes > 0 -> OliveMossAccent
+            else -> palette.secondaryCard.copy(alpha = if (palette.isDarkMode) 0.2f else 0.7f)
+          },
+          border = BorderStroke(1.dp, if (timer.isActive || loggedMinutes > 0) OliveMossAccent else palette.darkCardBorder),
+        ) {
+          Text(
+            text = when {
+              timer.isRunning -> "Active · ${DateKeyHelper.formatElapsedClock(timer.elapsedSeconds)}"
+              timer.isActive -> "Paused · ${DateKeyHelper.formatElapsedClock(timer.elapsedSeconds)}"
+              loggedMinutes > 0 -> "${loggedMinutes}m / ${targetMinutes}m"
+              else -> "0/${targetMinutes}m"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (timer.isActive || loggedMinutes > 0) Color.White else palette.onDarkCard,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+          )
+        }
+      }
+
+      LinearProgressIndicator(
+        progress = { ratio },
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(7.dp)
+          .clip(RoundedCornerShape(50)),
+        color = palette.accentOnDarkCard,
+        trackColor = palette.onDarkCard.copy(alpha = 0.16f),
+        strokeCap = StrokeCap.Round,
+      )
+
+      if (!timer.isActive) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          SKILL_SUGGESTION_PRESETS.forEach { preset ->
+            val picked = skillInput.equals(preset, ignoreCase = true)
+            Surface(
+              shape = RoundedCornerShape(50),
+              color = if (picked) OliveMossAccent else palette.onDarkCard.copy(alpha = 0.10f),
+              border = BorderStroke(1.dp, if (picked) OliveMossAccent else palette.darkCardBorder),
+              onClick = {
+                skillInput = preset
+                skillError = null
+              },
+            ) {
+              Text(
+                text = preset,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (picked) Color.White else palette.onDarkCard,
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+              )
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = skillInput,
+          onValueChange = {
+            skillInput = it
+            if (skillError != null && it.isNotBlank()) skillError = null
+          },
+          label = { Text("Skill You Are Learning") },
+          placeholder = { Text("e.g., Web Development, CPPM, Kotlin") },
+          isError = skillError != null,
+          supportingText = skillError?.let { msg -> { Text(msg, color = Color(0xFFFF8A80)) } },
+          singleLine = true,
+          colors = fieldColors,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("skill_name_input"),
+        )
+      } else {
+        Surface(
+          shape = RoundedCornerShape(16.dp),
+          color = palette.onDarkCard.copy(alpha = 0.08f),
+          border = BorderStroke(1.dp, palette.accentOnDarkCard.copy(alpha = 0.55f)),
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = if (timer.isRunning) "Learning Now" else "Session Paused",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = palette.accentOnDarkCard,
+                )
+                Text(
+                  text = timer.titleOrSkillName.ifBlank { "Skill Practice" },
+                  style = MaterialTheme.typography.titleMedium,
+                  color = palette.onDarkCard,
+                )
+              }
+              Text(
+                text = DateKeyHelper.formatElapsedClock(timer.elapsedSeconds),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = palette.onDarkCard,
+                modifier = Modifier.testTag("skill_timer_clock"),
+              )
+            }
+
+            OutlinedTextField(
+              value = notesDraft,
+              onValueChange = { notesDraft = it },
+              label = { Text("Learning Notes (optional)") },
+              placeholder = { Text("What topic or module are you practicing?") },
+              colors = fieldColors,
+              singleLine = true,
+              modifier = Modifier.fillMaxWidth(),
+            )
+          }
+        }
+      }
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        if (!timer.isActive) {
+          Button(
+            onClick = {
+              val clean = skillInput.trim()
+              if (clean.isEmpty()) {
+                skillError = "Please select or enter a skill name first."
+                return@Button
+              }
+              onStart(clean, notesDraft)
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = OliveMossAccent),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .weight(1f)
+              .height(48.dp)
+              .testTag("start_skill_button"),
+          ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Start Learning", color = Color.White, style = MaterialTheme.typography.labelLarge)
+          }
+
+          OutlinedButton(
+            onClick = onLogManual,
+            border = BorderStroke(1.dp, palette.darkCardBorder),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .height(48.dp)
+              .testTag("log_skill_manual_button"),
+          ) {
+            Icon(Icons.Filled.Add, contentDescription = "Log Skill manually", tint = palette.accentOnDarkCard, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.size(4.dp))
+            Text("Log", color = palette.onDarkCard)
+          }
+        } else {
+          if (timer.isRunning) {
+            OutlinedButton(
+              onClick = onPause,
+              border = BorderStroke(1.dp, palette.accentOnDarkCard),
+              shape = RoundedCornerShape(50),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("pause_skill_button"),
+            ) {
+              Icon(Icons.Filled.Pause, contentDescription = null, tint = palette.onDarkCard, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.size(6.dp))
+              Text("Pause", color = palette.onDarkCard)
+            }
+          } else {
+            Button(
+              onClick = onResume,
+              colors = ButtonDefaults.buttonColors(containerColor = OliveMossAccent),
+              shape = RoundedCornerShape(50),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("resume_skill_button"),
+            ) {
+              Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+              Spacer(Modifier.size(6.dp))
+              Text("Resume", color = Color.White)
+            }
+          }
+
+          Button(
+            onClick = { onFinish(notesDraft) },
+            colors = ButtonDefaults.buttonColors(containerColor = OliveMossDeep),
+            shape = RoundedCornerShape(50),
+            modifier = Modifier
+              .weight(1f)
+              .height(48.dp)
+              .testTag("finish_skill_button"),
+          ) {
+            Icon(Icons.Filled.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(6.dp))
+            Text("Finish", color = Color.White)
+          }
+        }
+      }
+
+      if (savedSessions.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text(
+            text = "Completed Skill Sessions Today (${savedSessions.size})",
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.accentOnDarkCard,
+          )
+          savedSessions.forEach { session ->
+            SavedActivityMiniRow(
+              session = session,
+              onEdit = { onEditSession(session) },
+              onDelete = { onDeleteSession(session) },
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SavedActivityMiniRow(
+  session: ActivitySessionEntity,
+  onEdit: () -> Unit,
+  onDelete: () -> Unit,
+) {
+  val palette = LocalVisionPalette.current
+  Surface(
+    shape = RoundedCornerShape(14.dp),
+    color = palette.onDarkCard.copy(alpha = 0.07f),
+    border = BorderStroke(1.dp, palette.darkCardBorder.copy(alpha = 0.7f)),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "${session.titleOrSkillName} · ${session.durationMinutes}m",
+          style = MaterialTheme.typography.labelLarge,
+          color = palette.onDarkCard,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+          text = buildString {
+            append("${DateKeyHelper.formatMillisTime12h(session.startTimeMillis)} – ${DateKeyHelper.formatMillisTime12h(session.endTimeMillis)}")
+            if (session.notes.isNotBlank()) append(" · ${session.notes}")
+          },
+          style = MaterialTheme.typography.bodySmall,
+          color = palette.onDarkCardMuted,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(
+          onClick = onEdit,
+          modifier = Modifier.minimumInteractiveComponentSize(),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Edit,
+            contentDescription = "Edit ${session.titleOrSkillName}",
+            tint = palette.accentOnDarkCard,
+            modifier = Modifier.size(18.dp),
+          )
+        }
+        IconButton(
+          onClick = onDelete,
+          modifier = Modifier.minimumInteractiveComponentSize(),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.DeleteOutline,
+            contentDescription = "Delete ${session.titleOrSkillName}",
+            tint = if (palette.isDarkMode) Color(0xFFFF8A80) else VisionDangerRed,
+            modifier = Modifier.size(18.dp),
+          )
+        }
+      }
+    }
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -844,8 +1383,10 @@ fun TaskEditorSheet(
   onDelete: (Long) -> Unit,
   onDismiss: () -> Unit,
 ) {
+  val palette = LocalVisionPalette.current
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var title by remember { mutableStateOf(initialTask?.title.orEmpty()) }
+  var titleError by remember { mutableStateOf<String?>(null) }
   var category by remember { mutableStateOf(initialTask?.category ?: "Skill Dev") }
   var hour24 by remember {
     mutableIntStateOf(
@@ -858,14 +1399,13 @@ fun TaskEditorSheet(
     )
   }
   var hasScheduleTime by remember { mutableStateOf(initialTask == null || initialTask.scheduledMinutesOfDay >= 0) }
-  var isPriority by remember { mutableStateOf(initialTask?.isPriority ?: false) }
   var isRoutine by remember { mutableStateOf(initialTask?.isRoutine ?: false) }
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
-    containerColor = WarmSandstone,
-    contentColor = SandstoneInk,
+    containerColor = palette.primaryCard,
+    contentColor = palette.onPrimaryCard,
     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
   ) {
     Column(
@@ -878,13 +1418,21 @@ fun TaskEditorSheet(
       Text(
         text = if (initialTask == null) "Create Task or Routine" else "Edit Task",
         style = MaterialTheme.typography.titleLarge,
-        color = SandstoneInk,
+        color = palette.onPrimaryCard,
       )
 
       OutlinedTextField(
         value = title,
-        onValueChange = { title = it },
+        onValueChange = {
+          title = it
+          if (titleError != null && it.isNotBlank()) titleError = null
+        },
         label = { Text("Task Title") },
+        isError = titleError != null,
+        supportingText = titleError?.let { msg ->
+          { Text(msg, color = VisionDangerRed) }
+        },
+        colors = visionPrimaryCardFieldColors(palette),
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
@@ -897,84 +1445,117 @@ fun TaskEditorSheet(
           Surface(
             modifier = Modifier.weight(1f),
             shape = RoundedCornerShape(10.dp),
-            color = if (active) OliveMossAccent else Color(0xFFE1D1B6),
+            color = if (active) OliveMossAccent else palette.secondaryCard,
+            border = BorderStroke(1.dp, palette.cardBorder),
             onClick = { category = cat },
           ) {
             Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-              Text(cat, style = MaterialTheme.typography.labelSmall, color = if (active) Color.White else SandstoneInk)
+              Text(cat, style = MaterialTheme.typography.labelSmall, color = if (active) Color.White else palette.onPrimaryCard)
             }
           }
         }
       }
 
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Checkbox(checked = hasScheduleTime, onCheckedChange = { hasScheduleTime = it })
-          Text("Schedule Time", style = MaterialTheme.typography.bodyMedium)
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+              checked = hasScheduleTime,
+              onCheckedChange = { hasScheduleTime = it },
+              colors = visionPrimaryCardCheckboxColors(palette),
+            )
+            Text("Schedule Time", style = MaterialTheme.typography.bodyMedium, color = palette.onPrimaryCard)
+          }
+          if (hasScheduleTime) {
+            Text(
+              text = DateKeyHelper.formatFullTime12h(hour24, minute),
+              style = MaterialTheme.typography.titleMedium,
+              color = palette.accentOnPrimaryCard,
+            )
+          }
         }
         if (hasScheduleTime) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedButton(onClick = { hour24 = (hour24 + 23) % 24 }) { Text("-1h") }
-            Text(DateKeyHelper.formatFullTime12h(hour24, minute), style = MaterialTheme.typography.titleSmall)
-            OutlinedButton(onClick = { hour24 = (hour24 + 1) % 24 }) { Text("+1h") }
-            OutlinedButton(onClick = { minute = (minute + 15) % 60 }) { Text("+15m") }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            OutlinedButton(
+              onClick = { hour24 = (hour24 + 23) % 24 },
+              modifier = Modifier.weight(1f),
+              border = BorderStroke(1.dp, palette.cardBorder),
+            ) {
+              Text("-1h", color = palette.onPrimaryCard)
+            }
+            OutlinedButton(
+              onClick = { hour24 = (hour24 + 1) % 24 },
+              modifier = Modifier.weight(1f),
+              border = BorderStroke(1.dp, palette.cardBorder),
+            ) {
+              Text("+1h", color = palette.onPrimaryCard)
+            }
+            OutlinedButton(
+              onClick = { minute = (minute + 15) % 60 },
+              modifier = Modifier.weight(1f),
+              border = BorderStroke(1.dp, palette.cardBorder),
+            ) {
+              Text("+15m", color = palette.onPrimaryCard)
+            }
           }
         }
       }
 
-      Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Checkbox(checked = isPriority, onCheckedChange = { isPriority = it })
-          Text("Today's Priority", style = MaterialTheme.typography.bodyMedium)
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Checkbox(checked = isRoutine, onCheckedChange = { isRoutine = it })
-          Text("Daily Routine", style = MaterialTheme.typography.bodyMedium)
-        }
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(
+          checked = isRoutine,
+          onCheckedChange = { isRoutine = it },
+          colors = visionPrimaryCardCheckboxColors(palette),
+        )
+        Text("Repeat as Daily Routine", style = MaterialTheme.typography.bodyMedium, color = palette.onPrimaryCard)
       }
 
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (initialTask != null) {
           OutlinedButton(
             onClick = { onDelete(initialTask.id) },
+            border = BorderStroke(1.dp, VisionDangerRed.copy(alpha = 0.6f)),
             modifier = Modifier.height(48.dp),
           ) {
-            Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete task", tint = Color(0xFFA93226))
+            Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete task", tint = VisionDangerRed)
             Spacer(Modifier.size(4.dp))
-            Text("Delete", color = Color(0xFFA93226))
+            Text("Delete", color = VisionDangerRed)
           }
         }
         Button(
           onClick = {
-            if (title.isNotBlank()) {
-              val mins = if (hasScheduleTime) hour24 * 60 + minute else -1
-              val timeText = if (hasScheduleTime) DateKeyHelper.formatFullTime12h(hour24, minute) else ""
-              onSave(
-                (initialTask ?: TaskEntity(
-                  title = title.trim(),
-                  category = category,
-                  scheduledTimeText = timeText,
-                  scheduledMinutesOfDay = mins,
-                  isPriority = isPriority,
-                  isRoutine = isRoutine,
-                  isCompleted = false,
-                  dateKey = defaultDateKey,
-                )).copy(
-                  title = title.trim(),
-                  category = category,
-                  scheduledTimeText = timeText,
-                  scheduledMinutesOfDay = mins,
-                  isPriority = isPriority,
-                  isRoutine = isRoutine,
-                ),
-              )
+            if (title.isBlank()) {
+              titleError = "Please enter a task title."
+              return@Button
             }
+            val mins = if (hasScheduleTime) hour24 * 60 + minute else -1
+            val timeText = if (hasScheduleTime) DateKeyHelper.formatFullTime12h(hour24, minute) else ""
+            onSave(
+              (initialTask ?: TaskEntity(
+                title = title.trim(),
+                category = category,
+                scheduledTimeText = timeText,
+                scheduledMinutesOfDay = mins,
+                isPriority = false,
+                isRoutine = isRoutine,
+                isCompleted = false,
+                dateKey = defaultDateKey,
+              )).copy(
+                title = title.trim(),
+                category = category,
+                scheduledTimeText = timeText,
+                scheduledMinutesOfDay = mins,
+                isRoutine = isRoutine,
+              ),
+            )
           },
-          enabled = title.isNotBlank(),
           modifier = Modifier
             .weight(1f)
             .height(48.dp)
@@ -996,8 +1577,10 @@ private fun GoalEditorSheet(
   onDelete: (Long) -> Unit,
   onDismiss: () -> Unit,
 ) {
+  val palette = LocalVisionPalette.current
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var title by remember { mutableStateOf(initialGoal?.title.orEmpty()) }
+  var titleError by remember { mutableStateOf<String?>(null) }
   var subtitle by remember { mutableStateOf(initialGoal?.subtitle.orEmpty()) }
   var target by remember { mutableIntStateOf(initialGoal?.targetValue ?: 10) }
   var unit by remember { mutableStateOf(initialGoal?.unit ?: "steps") }
@@ -1005,8 +1588,8 @@ private fun GoalEditorSheet(
   ModalBottomSheet(
     onDismissRequest = onDismiss,
     sheetState = sheetState,
-    containerColor = WarmSandstone,
-    contentColor = SandstoneInk,
+    containerColor = palette.primaryCard,
+    contentColor = palette.onPrimaryCard,
     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
   ) {
     Column(
@@ -1019,12 +1602,18 @@ private fun GoalEditorSheet(
       Text(
         text = if (initialGoal == null) "Create Personal Goal" else "Edit Personal Goal",
         style = MaterialTheme.typography.titleLarge,
-        color = SandstoneInk,
+        color = palette.onPrimaryCard,
       )
       OutlinedTextField(
         value = title,
-        onValueChange = { title = it },
+        onValueChange = {
+          title = it
+          if (titleError != null && it.isNotBlank()) titleError = null
+        },
         label = { Text("Goal Title") },
+        isError = titleError != null,
+        supportingText = titleError?.let { msg -> { Text(msg, color = VisionDangerRed) } },
+        colors = visionPrimaryCardFieldColors(palette),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
       )
@@ -1032,6 +1621,7 @@ private fun GoalEditorSheet(
         value = subtitle,
         onValueChange = { subtitle = it },
         label = { Text("Focus Milestone / Notes") },
+        colors = visionPrimaryCardFieldColors(palette),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
       )
@@ -1040,46 +1630,60 @@ private fun GoalEditorSheet(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        Text("Target: $target $unit", style = MaterialTheme.typography.titleSmall)
+        Text("Target: $target $unit", style = MaterialTheme.typography.titleSmall, color = palette.onPrimaryCard)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-          OutlinedButton(onClick = { target = (target - 1).coerceAtLeast(1) }) { Text("-1") }
-          OutlinedButton(onClick = { target += 1 }) { Text("+1") }
-          OutlinedButton(onClick = {
-            unit = when (unit) {
-              "steps" -> "modules"
-              "modules" -> "days"
-              else -> "steps"
-            }
-          }) { Text(unit) }
+          OutlinedButton(
+            onClick = { target = (target - 1).coerceAtLeast(1) },
+            border = BorderStroke(1.dp, palette.cardBorder),
+          ) { Text("-1", color = palette.onPrimaryCard) }
+          OutlinedButton(
+            onClick = { target += 1 },
+            border = BorderStroke(1.dp, palette.cardBorder),
+          ) { Text("+1", color = palette.onPrimaryCard) }
+          OutlinedButton(
+            onClick = {
+              unit = when (unit) {
+                "steps" -> "modules"
+                "modules" -> "days"
+                else -> "steps"
+              }
+            },
+            border = BorderStroke(1.dp, palette.cardBorder),
+          ) { Text(unit, color = palette.onPrimaryCard) }
         }
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         if (initialGoal != null) {
-          OutlinedButton(onClick = { onDelete(initialGoal.id) }, modifier = Modifier.height(48.dp)) {
-            Text("Delete", color = Color(0xFFA93226))
+          OutlinedButton(
+            onClick = { onDelete(initialGoal.id) },
+            border = BorderStroke(1.dp, VisionDangerRed.copy(alpha = 0.6f)),
+            modifier = Modifier.height(48.dp),
+          ) {
+            Text("Delete", color = VisionDangerRed)
           }
         }
         Button(
           onClick = {
-            if (title.isNotBlank()) {
-              onSave(
-                (initialGoal ?: GoalEntity(
-                  title = title.trim(),
-                  subtitle = subtitle.trim().ifEmpty { "Personal Milestone" },
-                  currentValue = 0,
-                  targetValue = target,
-                  unit = unit,
-                  category = "Personal",
-                )).copy(
-                  title = title.trim(),
-                  subtitle = subtitle.trim().ifEmpty { "Personal Milestone" },
-                  targetValue = target,
-                  unit = unit,
-                ),
-              )
+            if (title.isBlank()) {
+              titleError = "Please enter a goal title."
+              return@Button
             }
+            onSave(
+              (initialGoal ?: GoalEntity(
+                title = title.trim(),
+                subtitle = subtitle.trim().ifEmpty { "Personal Milestone" },
+                currentValue = 0,
+                targetValue = target,
+                unit = unit,
+                category = "Personal",
+              )).copy(
+                title = title.trim(),
+                subtitle = subtitle.trim().ifEmpty { "Personal Milestone" },
+                targetValue = target,
+                unit = unit,
+              ),
+            )
           },
-          enabled = title.isNotBlank(),
           modifier = Modifier
             .weight(1f)
             .height(48.dp),

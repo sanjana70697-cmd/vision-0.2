@@ -79,22 +79,24 @@ class AlarmReceiver : BroadcastReceiver() {
         val pendingResult: PendingResult? = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
           try {
-            val db = VisionDatabase.getInstance(context)
-            val repo = VisionRepository(db.visionDao())
-            val config = repo.getFocusConfigSync()
-            val todayTasks = db.visionDao().getTasksForDateSync(DateKeyHelper.todayKey())
-            val targetTask = todayTasks.firstOrNull { it.id == taskId && !it.isCompleted }
-            if (targetTask != null) {
-              val announcement = AlfredAnnouncementEngine.buildUpcomingTaskAnnouncement(targetTask)
-              AlfredAnnouncementService.announceInBackground(
-                context = context,
-                title = announcement.title,
-                message = announcement.spokenMessage,
-                notificationId = VisionNotificationHelper.UPCOMING_TASK_NOTIFICATION_ID,
-                speakAloud = config.aiMorningBriefing,
-              )
+            runCatching {
+              val db = VisionDatabase.getInstance(context)
+              val repo = VisionRepository(db.visionDao())
+              val config = repo.getFocusConfigSync()
+              val todayTasks = db.visionDao().getTasksForDateSync(DateKeyHelper.todayKey())
+              val targetTask = todayTasks.firstOrNull { it.id == taskId && !it.isCompleted }
+              if (targetTask != null) {
+                val announcement = AlfredAnnouncementEngine.buildUpcomingTaskAnnouncement(targetTask)
+                AlfredAnnouncementService.announceInBackground(
+                  context = context,
+                  title = announcement.title,
+                  message = announcement.spokenMessage,
+                  notificationId = VisionNotificationHelper.UPCOMING_TASK_NOTIFICATION_ID,
+                  speakAloud = config.aiMorningBriefing,
+                )
+              }
+              AlfredAnnouncementScheduler.scheduleNextUpcomingTaskAlert(context, todayTasks)
             }
-            AlfredAnnouncementScheduler.scheduleNextUpcomingTaskAlert(context, todayTasks)
           } finally {
             pendingResult?.finish()
           }
@@ -106,21 +108,23 @@ class AlarmReceiver : BroadcastReceiver() {
         val pendingResult: PendingResult? = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
           try {
-            val db = VisionDatabase.getInstance(context)
-            val repo = VisionRepository(db.visionDao())
-            val config = repo.getFocusConfigSync()
-            val summary = repo.observeTodayProductivity().first()
-            if (summary.totalTasks > 0 || summary.focusMinutesToday > 0) {
-              val reportAnn = AlfredAnnouncementEngine.buildDailyReportReadyAnnouncement(summary)
-              AlfredAnnouncementService.announceInBackground(
-                context = context,
-                title = reportAnn.title,
-                message = reportAnn.spokenMessage,
-                notificationId = VisionNotificationHelper.DAILY_REPORT_NOTIFICATION_ID,
-                speakAloud = config.aiMorningBriefing,
-              )
+            runCatching {
+              val db = VisionDatabase.getInstance(context)
+              val repo = VisionRepository(db.visionDao())
+              val config = repo.getFocusConfigSync()
+              val summary = repo.observeTodayProductivity().first()
+              if (summary.totalTasks > 0 || summary.focusMinutesToday > 0) {
+                val reportAnn = AlfredAnnouncementEngine.buildDailyReportReadyAnnouncement(summary)
+                AlfredAnnouncementService.announceInBackground(
+                  context = context,
+                  title = reportAnn.title,
+                  message = reportAnn.spokenMessage,
+                  notificationId = VisionNotificationHelper.DAILY_REPORT_NOTIFICATION_ID,
+                  speakAloud = config.aiMorningBriefing,
+                )
+              }
+              AlfredAnnouncementScheduler.scheduleEveningDailyReportAlert(context)
             }
-            AlfredAnnouncementScheduler.scheduleEveningDailyReportAlert(context)
           } finally {
             pendingResult?.finish()
           }

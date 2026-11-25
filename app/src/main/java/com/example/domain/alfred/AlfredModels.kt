@@ -1,5 +1,6 @@
 package com.example.domain.alfred
 
+import com.example.data.local.ActivitySessionEntity
 import com.example.data.local.AlarmEntity
 import com.example.data.local.DailyProductivitySnapshotEntity
 import com.example.data.local.DistractingAppEntity
@@ -48,6 +49,24 @@ data class AlfredContextSnapshot(
   val focusConfig: FocusConfigEntity,
   val todayProductivity: ProductivitySummary,
   val weeklySnapshots: List<Pair<String, DailyProductivitySnapshotEntity?>>,
+  val todayActivitySessions: List<ActivitySessionEntity> = emptyList(),
+)
+
+sealed interface AlfredActionPayload {
+  data class DeleteTask(val taskId: Long, val taskTitle: String) : AlfredActionPayload
+  data class DeleteAlarm(val alarmId: Long, val alarmLabel: String) : AlfredActionPayload
+  data class DisableAlarms(val alarmIds: List<Long>, val summaryLabel: String) : AlfredActionPayload
+  data object StopFocusAndStudySession : AlfredActionPayload
+  data class UnblockApp(val packageName: String, val appName: String) : AlfredActionPayload
+}
+
+data class PendingAlfredAction(
+  val id: Long = System.nanoTime(),
+  val title: String,
+  val description: String,
+  val isDestructive: Boolean = false,
+  val suggestedTab: VisionTab? = null,
+  val payload: AlfredActionPayload,
 )
 
 data class AlfredChatEntry(
@@ -66,6 +85,7 @@ data class AlfredExecutionResult(
   val suggestedTab: VisionTab? = null,
   val usedCloudAi: Boolean = false,
   val cloudError: String? = null,
+  val pendingConfirmation: PendingAlfredAction? = null,
 )
 
 sealed interface AlfredCloudState {
@@ -90,6 +110,6 @@ data class AlfredVoiceState(
   val ttsReady: Boolean = false,
   val voiceMuted: Boolean = false,
   val preferOfflineRecognition: Boolean = false,
-  val statusNote: String = "Tap the mic or type a command across all four tabs.",
+  val statusNote: String = "Tap the mic or ask ALFRED anything across your schedule.",
   val errorMessage: String? = null,
 )

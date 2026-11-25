@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -46,6 +47,7 @@ import com.example.ui.screens.AlarmScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DistractionScreen
 import com.example.ui.screens.ReportScreen
+import com.example.ui.theme.LocalVisionPalette
 import com.example.ui.theme.VisionTab
 import com.example.ui.theme.VisionTheme
 
@@ -72,11 +74,18 @@ fun VisionApp(
   var showAiSheet by remember { mutableStateOf(false) }
   var showMenuSheet by remember { mutableStateOf(false) }
 
+  val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
   val todayTasks by viewModel.todayTasks.collectAsStateWithLifecycle()
   val tomorrowTasks by viewModel.tomorrowTasks.collectAsStateWithLifecycle()
   val pendingTasks by viewModel.allPendingTasks.collectAsStateWithLifecycle()
   val goals by viewModel.goals.collectAsStateWithLifecycle()
+  val todayHabits by viewModel.todayHabits.collectAsStateWithLifecycle()
+  val todayActivitySessions by viewModel.todayActivitySessions.collectAsStateWithLifecycle()
+  val recentActivitySessions by viewModel.recentActivitySessions.collectAsStateWithLifecycle()
   val yogaStreakDays by viewModel.yogaStreakDays.collectAsStateWithLifecycle()
+  val yogaTimerState by viewModel.yogaTimerState.collectAsStateWithLifecycle()
+  val skillTimerState by viewModel.skillTimerState.collectAsStateWithLifecycle()
+  val focusTimerState by viewModel.focusTimerState.collectAsStateWithLifecycle()
   val alarms by viewModel.alarms.collectAsStateWithLifecycle()
   val distractingApps by viewModel.distractingApps.collectAsStateWithLifecycle()
   val focusSessions by viewModel.focusSessions.collectAsStateWithLifecycle()
@@ -86,20 +95,37 @@ fun VisionApp(
   val permissions by viewModel.permissions.collectAsStateWithLifecycle()
   val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
   val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
+  val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
-  // ALFRED Phase 3 State
+  // ALFRED State
   val nextRecommendation by viewModel.nextTaskRecommendation.collectAsStateWithLifecycle()
   val alfredVoiceState by viewModel.alfredVoiceState.collectAsStateWithLifecycle()
   val alfredCloudState by viewModel.alfredCloudState.collectAsStateWithLifecycle()
   val alfredChatHistory by viewModel.alfredChatHistory.collectAsStateWithLifecycle()
+  val conversationIds by viewModel.conversationIds.collectAsStateWithLifecycle()
+  val activeConversationId by viewModel.activeConversationId.collectAsStateWithLifecycle()
   val latestAnnouncement by viewModel.latestAnnouncement.collectAsStateWithLifecycle()
+  val pendingAlfredAction by viewModel.pendingAlfredAction.collectAsStateWithLifecycle()
   val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+  val suggestedTabEvent by viewModel.suggestedTabEvent.collectAsStateWithLifecycle()
 
   val snackbarHostState = remember { SnackbarHostState() }
   LaunchedEffect(errorMessage) {
     errorMessage?.let { msg ->
       snackbarHostState.showSnackbar(msg)
       viewModel.clearError()
+    }
+  }
+  LaunchedEffect(statusMessage) {
+    statusMessage?.let { msg ->
+      snackbarHostState.showSnackbar(msg)
+      viewModel.clearStatusMessage()
+    }
+  }
+  LaunchedEffect(suggestedTabEvent) {
+    suggestedTabEvent?.let { tab ->
+      activeTab = tab
+      viewModel.consumeSuggestedTab()
     }
   }
 
@@ -118,7 +144,8 @@ fun VisionApp(
     activeTab = VisionTab.Dashboard
   }
 
-  VisionTheme(activeTab = activeTab) {
+  VisionTheme(activeTab = activeTab, themeMode = themeMode) {
+    val palette = LocalVisionPalette.current
     VisionScreenBackground(activeTab = activeTab) {
       BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavRail = maxWidth >= 600.dp
@@ -126,7 +153,16 @@ fun VisionApp(
         Scaffold(
           containerColor = Color.Transparent,
           contentWindowInsets = WindowInsets(0, 0, 0, 0),
-          snackbarHost = { SnackbarHost(snackbarHostState) },
+          snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+              Snackbar(
+                snackbarData = data,
+                containerColor = palette.primaryCard,
+                contentColor = palette.onPrimaryCard,
+                actionColor = palette.accentOnPrimaryCard,
+              )
+            }
+          },
           bottomBar = {
             if (!useNavRail) {
               VisionBottomNavBar(
@@ -137,7 +173,7 @@ fun VisionApp(
           },
           floatingActionButton = {
             CentralAiFab(
-              isFocusRunning = focusConfig.activeTimerRunning,
+              isFocusRunning = focusTimerState.isRunning || focusConfig.activeTimerRunning,
               voicePhase = alfredVoiceState.phase,
               onClick = { showAiSheet = true },
             )
@@ -165,17 +201,28 @@ fun VisionApp(
                   VisionTab.Dashboard -> DashboardScreen(
                     tasks = todayTasks,
                     goals = goals,
+                    todayHabits = todayHabits,
+                    todayActivitySessions = todayActivitySessions,
                     productivity = todayProductivity,
                     yogaStreakDays = yogaStreakDays,
+                    yogaTimer = yogaTimerState,
+                    skillTimer = skillTimerState,
                     onToggleTask = viewModel::toggleTask,
-                    onTogglePriority = viewModel::toggleTaskPriority,
                     onSaveTask = viewModel::saveTask,
                     onDeleteTask = viewModel::deleteTask,
                     onSaveGoal = viewModel::saveGoal,
                     onIncrementGoal = viewModel::incrementGoal,
                     onDeleteGoal = viewModel::deleteGoal,
-                    onLogYoga = viewModel::logYogaSession,
-                    onLogSkill = viewModel::logSkillSession,
+                    onStartYogaTimer = viewModel::startYogaTimer,
+                    onPauseYogaTimer = viewModel::pauseYogaTimer,
+                    onResumeYogaTimer = viewModel::resumeYogaTimer,
+                    onFinishYogaTimer = viewModel::finishYogaTimer,
+                    onStartSkillTimer = viewModel::startSkillTimer,
+                    onPauseSkillTimer = viewModel::pauseSkillTimer,
+                    onResumeSkillTimer = viewModel::resumeSkillTimer,
+                    onFinishSkillTimer = viewModel::finishSkillTimer,
+                    onSaveActivitySession = viewModel::saveActivitySession,
+                    onDeleteActivitySession = viewModel::deleteActivitySession,
                     onOpenAiSheet = { showAiSheet = true },
                     onOpenMenu = { showMenuSheet = true },
                     onNavigateToReport = { activeTab = VisionTab.Report },
@@ -196,8 +243,10 @@ fun VisionApp(
 
                   VisionTab.Distraction -> DistractionScreen(
                     focusConfig = focusConfig,
+                    focusTimer = focusTimerState,
                     distractingApps = distractingApps,
                     focusSessions = focusSessions,
+                    todayActivitySessions = todayActivitySessions,
                     installedApps = installedApps,
                     permissions = permissions,
                     onSetFocusMode = viewModel::setFocusMode,
@@ -210,9 +259,14 @@ fun VisionApp(
                     onOpenAppPicker = viewModel::loadCuratedDistractingApps,
                     onStartTimer = viewModel::startFocusTimer,
                     onPauseTimer = viewModel::pauseFocusTimer,
+                    onResumeTimer = viewModel::resumeFocusTimer,
                     onResetTimer = viewModel::resetFocusTimer,
-                    onTriggerStudyWarning = viewModel::triggerStudyWarningCheck,
+                    onEndTimer = viewModel::endFocusTimer,
+                    onStartStudySession = viewModel::startStudySession,
+                    onStopStudySession = viewModel::stopStudySession,
                     onDismissStudyWarning = viewModel::dismissStudyWarning,
+                    onSaveActivitySession = viewModel::saveActivitySession,
+                    onDeleteActivitySession = viewModel::deleteActivitySession,
                     onRefreshUsage = viewModel::refreshPermissionsAndUsage,
                     onOpenAiSheet = { showAiSheet = true },
                     onOpenMenu = { showMenuSheet = true },
@@ -221,11 +275,19 @@ fun VisionApp(
                   VisionTab.Report -> ReportScreen(
                     todayProductivity = todayProductivity,
                     weeklySnapshots = weeklySnapshots,
+                    todayActivitySessions = todayActivitySessions,
+                    recentActivitySessions = recentActivitySessions,
+                    todayTasks = todayTasks,
                     pendingTasks = pendingTasks,
                     tomorrowTasks = tomorrowTasks,
                     focusConfig = focusConfig,
+                    onSaveActivitySession = viewModel::saveActivitySession,
+                    onDeleteActivitySession = viewModel::deleteActivitySession,
                     onMovePendingToTomorrow = viewModel::schedulePendingTaskForTomorrow,
+                    onCarryForwardTasks = viewModel::carryForwardTasksToTomorrow,
                     onSaveTomorrowTask = viewModel::saveTask,
+                    onToggleTask = viewModel::toggleTask,
+                    onDeleteTask = viewModel::deleteTask,
                     onSaveNextDayNote = viewModel::saveNextDayPlanNote,
                     onOpenAiSheet = { showAiSheet = true },
                     onOpenMenu = { showMenuSheet = true },
@@ -249,7 +311,10 @@ fun VisionApp(
           cloudState = alfredCloudState,
           isOnline = isOnline,
           chatHistory = alfredChatHistory,
+          conversationIds = conversationIds,
+          activeConversationId = activeConversationId,
           latestAnnouncement = latestAnnouncement,
+          pendingAction = pendingAlfredAction,
           recordAudioGranted = permissions.recordAudioGranted,
           onStartVoiceListening = viewModel::startAlfredVoiceListening,
           onStopVoiceListening = viewModel::stopAlfredVoiceListening,
@@ -257,6 +322,11 @@ fun VisionApp(
           onToggleMute = viewModel::toggleAlfredMute,
           onToggleOfflineVoice = viewModel::toggleOfflineSpeechPreference,
           onSubmitCommand = viewModel::submitAlfredCommand,
+          onConfirmPendingAction = viewModel::confirmPendingAlfredAction,
+          onCancelPendingAction = viewModel::cancelPendingAlfredAction,
+          onStartNewConversation = viewModel::startNewAlfredConversation,
+          onSelectConversation = viewModel::selectAlfredConversation,
+          onDeleteConversation = viewModel::deleteCurrentAlfredConversation,
           onStartRecommendedFocus = { mins ->
             viewModel.startFocusTimer(mins)
             showAiSheet = false
@@ -273,7 +343,9 @@ fun VisionApp(
       if (showMenuSheet) {
         SystemMenuAndPermissionsSheet(
           activeTab = activeTab,
+          themeMode = themeMode,
           permissions = permissions,
+          onSetThemeMode = viewModel::setThemeMode,
           onSelectTab = { activeTab = it },
           onRefreshPermissions = viewModel::refreshPermissionsAndUsage,
           onDismiss = { showMenuSheet = false },

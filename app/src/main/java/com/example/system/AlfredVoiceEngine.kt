@@ -25,7 +25,7 @@ private const val TAG = "AlfredVoiceEngine"
 
 /**
  * Manages Speech-to-Text (SpeechRecognizer) and Text-to-Speech (TextToSpeech) for ALFRED.
- * Supports offline voice engines and local language packs whenever available on device.
+ * Handles manual stop cleanly, sanitizes markdown before speaking, and avoids spurious errors.
  */
 class AlfredVoiceEngine(private val appContext: Context) {
 
@@ -37,6 +37,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
   private var isTtsInitialized = false
   private var pendingSpeakText: String? = null
   private var onFinalTranscriptCallback: ((String) -> Unit)? = null
+  private var manualStopRequested = false
 
   init {
     initTts()
@@ -79,7 +80,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
                 val nextPhase = if (it.phase == VoiceEnginePhase.SPEAKING) VoiceEnginePhase.IDLE else it.phase
                 it.copy(
                   phase = nextPhase,
-                  statusNote = "Tap the mic or type a command across all four tabs.",
+                  statusNote = "Tap the mic or ask ALFRED anything.",
                 )
               }
             }
@@ -137,7 +138,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
     _state.update {
       it.copy(
         phase = VoiceEnginePhase.PROCESSING,
-        statusNote = "ALFRED is coordinating your command...",
+        statusNote = "ALFRED is thinking...",
         errorMessage = null,
       )
     }
@@ -148,7 +149,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
       if (it.phase == VoiceEnginePhase.PROCESSING) {
         it.copy(
           phase = VoiceEnginePhase.IDLE,
-          statusNote = "Tap the mic or type a command across all four tabs.",
+          statusNote = "Tap the mic or ask ALFRED anything.",
         )
       } else {
         it
@@ -157,9 +158,10 @@ class AlfredVoiceEngine(private val appContext: Context) {
   }
 
   fun speak(text: String, forceOfflineAudio: Boolean = false) {
-    if (text.isBlank() || _state.value.voiceMuted) return
+    val cleanSpoken = sanitizeForSpeech(text)
+    if (cleanSpoken.isBlank() || _state.value.voiceMuted) return
     if (!isTtsInitialized || tts == null) {
-      pendingSpeakText = text
+      pendingSpeakText = cleanSpoken
       return
     }
     runCatching {
@@ -169,7 +171,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
           putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS, "false")
         }
       }
-      tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+      tts?.speak(cleanSpoken, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }.onFailure { e ->
       Log.e(TAG, "TTS speak failed", e)
       _state.update {
@@ -200,7 +202,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
       _state.update {
         it.copy(
           phase = VoiceEnginePhase.IDLE,
-          errorMessage = "Microphone permission is required for voice commands.",
+          errorMessage = "Microphone permission is required for voice input.",
         )
       }
       return
@@ -210,16 +212,18 @@ class AlfredVoiceEngine(private val appContext: Context) {
       _state.update {
         it.copy(
           phase = VoiceEnginePhase.UNAVAILABLE,
-          errorMessage = "Speech recognition service is not installed or unavailable on this device. You can type commands below.",
+          errorMessage = "Speech recognition service is not installed or unavailable on this device. You can type below.",
         )
       }
       return
     }
 
     stopSpeaking()
+    manualStopRequested = false
     onFinalTranscriptCallback = onResult
 
     runCatching {
+      speechRecognizer?.cancel()
       speechRecognizer?.destroy()
       speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply {
         setRecognitionListener(object : RecognitionListener {
@@ -228,7 +232,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
               it.copy(
                 phase = VoiceEnginePhase.LISTENING,
                 partialTranscript = "",
-                statusNote = if (preferOffline) "Listening (offline speech preferred)..." else "Listening...",
+                statusNote = if (preferOffline) "Listening (offline speech preferred)..." else "Listening... Speak naturally.",
                 errorMessage = null,
               )
             }
@@ -242,19 +246,45 @@ class AlfredVoiceEngine(private val appContext: Context) {
             _state.update {
               it.copy(
                 phase = VoiceEnginePhase.PROCESSING,
-                statusNote = "Processing speech...",
+                statusNote = "Transcribing your speech...",
               )
             }
           }
 
           override fun onError(error: Int) {
+            if (manualStopRequested && (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
+              manualStopRequested = false
+              _state.update {
+                it.copy(
+                  phase = VoiceEnginePhase.IDLE,
+                  partialTranscript = "",
+                  statusNote = "Voice listening stopped.",
+                  errorMessage = null,
+                )
+              }
+              return
+            }
+            val partialFallback = _state.value.partialTranscript.trim()
+            if (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT && partialFallback.isNotBlank()) {
+              _state.update {
+                it.copy(
+                  phase = VoiceEnginePhase.PROCESSING,
+                  partialTranscript = "",
+                  lastTranscript = partialFallback,
+                  statusNote = "Understood: \"$partialFallback\"",
+                  errorMessage = null,
+                )
+              }
+              onFinalTranscriptCallback?.invoke(partialFallback)
+              return
+            }
             val detail = mapSpeechError(error)
             Log.w(TAG, "SpeechRecognizer error=$error ($detail)")
             _state.update {
               it.copy(
                 phase = VoiceEnginePhase.IDLE,
                 partialTranscript = "",
-                statusNote = "Tap the mic or type a command across all four tabs.",
+                statusNote = "Tap the mic or type below.",
                 errorMessage = detail,
               )
             }
@@ -263,6 +293,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
           override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             val transcript = matches?.firstOrNull()?.trim().orEmpty()
+              .ifBlank { _state.value.partialTranscript.trim() }
             if (transcript.isNotBlank()) {
               _state.update {
                 it.copy(
@@ -270,6 +301,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
                   partialTranscript = "",
                   lastTranscript = transcript,
                   statusNote = "Understood: \"$transcript\"",
+                  errorMessage = null,
                 )
               }
               onFinalTranscriptCallback?.invoke(transcript)
@@ -277,6 +309,7 @@ class AlfredVoiceEngine(private val appContext: Context) {
               _state.update {
                 it.copy(
                   phase = VoiceEnginePhase.IDLE,
+                  partialTranscript = "",
                   errorMessage = "No speech was detected. Please try again.",
                 )
               }
@@ -302,7 +335,8 @@ class AlfredVoiceEngine(private val appContext: Context) {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
         if (preferOffline) {
           putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         }
@@ -320,13 +354,15 @@ class AlfredVoiceEngine(private val appContext: Context) {
   }
 
   fun stopListening() {
+    manualStopRequested = true
     runCatching { speechRecognizer?.stopListening() }
     _state.update {
       if (it.phase == VoiceEnginePhase.LISTENING) {
         it.copy(
           phase = VoiceEnginePhase.IDLE,
           partialTranscript = "",
-          statusNote = "Tap the mic or type a command across all four tabs.",
+          statusNote = "Voice listening stopped.",
+          errorMessage = null,
         )
       } else {
         it
@@ -345,15 +381,23 @@ class AlfredVoiceEngine(private val appContext: Context) {
     isTtsInitialized = false
   }
 
+  private fun sanitizeForSpeech(raw: String): String {
+    return raw
+      .replace(Regex("[*_`#>•]+"), " ")
+      .replace(Regex("\\s+"), " ")
+      .trim()
+      .take(480)
+  }
+
   private fun mapSpeechError(code: Int): String = when (code) {
-    SpeechRecognizer.ERROR_AUDIO -> "Audio recording error."
-    SpeechRecognizer.ERROR_CLIENT -> "Voice recognizer cancelled."
+    SpeechRecognizer.ERROR_AUDIO -> "Microphone audio recording error."
+    SpeechRecognizer.ERROR_CLIENT -> "Voice recognizer was interrupted. Tap the mic to try again."
     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required."
     SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-      "Network speech unavailable; enable offline language pack or type command."
-    SpeechRecognizer.ERROR_NO_MATCH -> "Could not recognize speech clearly. Please try again."
+      "Network speech unavailable; enable Offline Voice Pack or type below."
+    SpeechRecognizer.ERROR_NO_MATCH -> "Could not hear clear speech. Tap the mic and speak clearly."
     SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognizer is busy. Wait a moment and retry."
-    SpeechRecognizer.ERROR_SERVER -> "Speech service unavailable. Offline pack or text input available."
+    SpeechRecognizer.ERROR_SERVER -> "Speech service unavailable. Offline voice pack or text input available."
     SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech heard before timeout."
     SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED, SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
       "Offline voice language pack is not installed on this device."

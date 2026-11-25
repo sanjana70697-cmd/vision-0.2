@@ -41,14 +41,13 @@ object AlfredAnnouncementEngine {
       )
     }
 
-    // Score pending tasks: prefer upcoming/due soonest + priority tasks
+    // Score pending tasks by upcoming schedule proximity and creation order
     val best = pendingToday.minWithOrNull(
       compareBy<TaskEntity>(
         { task ->
           if (task.scheduledMinutesOfDay < 0) 2000
           else {
             val delta = task.scheduledMinutesOfDay - nowMinutesOfDay
-            // Task starting within [-45m, +90m] gets top temporal urgency
             when {
               delta in -45..90 -> kotlin.math.abs(delta)
               delta > 90 -> 200 + delta
@@ -56,19 +55,17 @@ object AlfredAnnouncementEngine {
             }
           }
         },
-        { if (it.isPriority) 0 else 1 },
         { it.id },
       ),
     )!!
 
     val timeTag = if (best.scheduledTimeText.isNotBlank()) " at ${best.scheduledTimeText}" else ""
-    val priorityTag = if (best.isPriority) "priority " else ""
     val duration = if (best.category.contains("Study", ignoreCase = true) ||
       best.category.contains("Skill", ignoreCase = true)
     ) 45 else 25
 
     val rationale = buildString {
-      append("Selected ${priorityTag}${best.category} task$timeTag. ")
+      append("Selected ${best.category} task$timeTag. ")
       append("${snapshot.todayProductivity.completedTasks} of ${snapshot.todayProductivity.totalTasks} tasks complete (${snapshot.todayProductivity.productivityPercent}%).")
     }
 
@@ -167,14 +164,14 @@ object AlfredAnnouncementEngine {
     nowMillis: Long = System.currentTimeMillis(),
   ): AlfredAnnouncement {
     val modeClause = if (studyModeEnabled) {
-      "Study Mode is enabled, keeping YouTube allowed for learning."
+      "Study Session monitoring is active. VISION will alert you if you switch to distracting apps."
     } else {
-      "Focus Shield is blocking selected distracting apps."
+      "Focus Shield is monitoring selected distracting apps."
     }
     val msg = "Your study session is now starting for $plannedMinutes minutes. $modeClause"
     return AlfredAnnouncement(
       type = AnnouncementType.STUDY_START,
-      title = "Study Session Starting · ${plannedMinutes}m",
+      title = "Study Session Active · ${plannedMinutes}m",
       message = msg,
       spokenMessage = msg,
       createdAtMillis = nowMillis,
@@ -188,13 +185,13 @@ object AlfredAnnouncementEngine {
     nowMillis: Long = System.currentTimeMillis(),
   ): AlfredAnnouncement {
     val msg = if (isStudyModeYouTube) {
-      "You are spending extended time on $appName in Study Mode. Please return to your task within $graceSeconds seconds."
+      "Study Session notice: you switched away from VISION to $appName. If this isn't planned study, please return to your task."
     } else {
-      "You are spending time on $appName, a distracting app. Please return to your task."
+      "You opened $appName during your active focus session. Please return to your task."
     }
     return AlfredAnnouncement(
       type = AnnouncementType.DISTRACTION_WARNING,
-      title = "ALFRED Focus Alert · $appName",
+      title = "Study Session Alert · $appName",
       message = msg,
       spokenMessage = msg,
       createdAtMillis = nowMillis,
@@ -230,8 +227,7 @@ object AlfredAnnouncementEngine {
         append("• Suggested Next: ${rec.headline}\n")
         pending.take(4).forEachIndexed { index, task ->
           val t = task.scheduledTimeText.ifBlank { task.category }
-          val p = if (task.isPriority) " [Priority]" else ""
-          append("${index + 1}. ${task.title} ($t)$p\n")
+          append("${index + 1}. ${task.title} ($t)\n")
         }
       }
       if (nextAlarm != null) {

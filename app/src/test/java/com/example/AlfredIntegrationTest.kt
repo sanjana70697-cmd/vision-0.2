@@ -271,4 +271,64 @@ class AlfredIntegrationTest {
     }
     AlarmReceiver().onReceive(context, reportIntent)
   }
+
+  @Test
+  fun `alfred identifies honestly as ai and requires confirmation before deleting`() = runBlocking {
+    val identityReply = brain.handleCommand("Are you human?")
+    assertTrue(identityReply.replyText.contains("AI assistant"))
+    assertTrue(identityReply.replyText.contains("not a human"))
+
+    val today = DateKeyHelper.todayKey()
+    repo.saveTask(
+      TaskEntity(
+        title = "Temporary Draft Task",
+        category = "Personal",
+        scheduledTimeText = "8:00 PM",
+        scheduledMinutesOfDay = 1200,
+        isPriority = false,
+        isRoutine = false,
+        isCompleted = false,
+        dateKey = today,
+      ),
+    ).getOrThrow()
+
+    val pendingDelete = brain.handleCommand(
+      command = "Delete task Temporary Draft Task",
+      requireConfirmation = true,
+    )
+    assertNotNull(pendingDelete.pendingConfirmation)
+    // Task still exists prior to confirmation
+    assertTrue(repo.observeTodayTasks(today).first().any { it.title == "Temporary Draft Task" })
+
+    val executed = brain.executePendingAction(pendingDelete.pendingConfirmation!!)
+    assertTrue(executed.executedActions.any { it.contains("Deleted") })
+    assertFalse(repo.observeTodayTasks(today).first().any { it.title == "Temporary Draft Task" })
+  }
+
+  @Test
+  fun `alfred captures live activity sessions in snapshot and logs skill yoga sessions cleanly`() = runBlocking {
+    val today = DateKeyHelper.todayKey()
+    val startMs = DateKeyHelper.combineDateKeyAndTime(today, 8, 0)
+    repo.saveActivitySession(
+      com.example.data.local.ActivitySessionEntity(
+        activityType = "SKILL",
+        dateKey = today,
+        titleOrSkillName = "System Design",
+        notes = "Caching patterns",
+        startTimeMillis = startMs,
+        endTimeMillis = startMs + 35 * 60_000L,
+        durationMinutes = 35,
+        source = "MANUAL",
+      ),
+    ).getOrThrow()
+
+    val snapshot = brain.captureLiveSnapshot()
+    assertEquals(1, snapshot.todayActivitySessions.size)
+    assertEquals("System Design", snapshot.todayActivitySessions.first().titleOrSkillName)
+    assertEquals(35, snapshot.todayProductivity.skillMinutesToday)
+
+    val skillRes = brain.handleCommand("Log 25m skill")
+    assertTrue(skillRes.executedActions.isNotEmpty())
+    assertEquals(60, repo.observeTodayProductivity(today).first().skillMinutesToday)
+  }
 }

@@ -22,14 +22,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,10 +46,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
@@ -53,6 +61,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Home
@@ -82,6 +91,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -118,6 +128,7 @@ import com.example.domain.alfred.AlfredCloudState
 import com.example.domain.alfred.AlfredVoiceState
 import com.example.domain.alfred.AnnouncementType
 import com.example.domain.alfred.NextTaskRecommendation
+import com.example.domain.alfred.PendingAlfredAction
 import com.example.domain.alfred.VoiceEnginePhase
 import com.example.system.UsageStatsHelper
 import com.example.ui.PermissionStatusSnapshot
@@ -131,7 +142,9 @@ import com.example.ui.theme.PlayfairDisplayFamily
 import com.example.ui.theme.PolishedCopper
 import com.example.ui.theme.PolishedCopperBorder
 import com.example.ui.theme.PolishedCopperBright
+import com.example.ui.theme.VisionDangerRed
 import com.example.ui.theme.VisionTab
+import com.example.ui.theme.VisionThemeMode
 import com.example.ui.theme.paletteFor
 
 @Composable
@@ -263,7 +276,7 @@ fun VisionTopBar(
       Icon(
         imageVector = rightIcon,
         contentDescription = rightContentDescription,
-        tint = palette.accentSoft,
+        tint = if (palette.isDarkMode) palette.accentSoft else palette.accent,
       )
     }
   }
@@ -546,7 +559,10 @@ fun CentralAiAssistantSheet(
   cloudState: AlfredCloudState,
   isOnline: Boolean,
   chatHistory: List<AlfredChatEntry>,
+  conversationIds: List<String>,
+  activeConversationId: String,
   latestAnnouncement: AlfredAnnouncement?,
+  pendingAction: PendingAlfredAction?,
   recordAudioGranted: Boolean,
   onStartVoiceListening: () -> Unit,
   onStopVoiceListening: () -> Unit,
@@ -554,6 +570,11 @@ fun CentralAiAssistantSheet(
   onToggleMute: () -> Unit,
   onToggleOfflineVoice: () -> Unit,
   onSubmitCommand: (String, Boolean) -> Unit,
+  onConfirmPendingAction: () -> Unit,
+  onCancelPendingAction: () -> Unit,
+  onStartNewConversation: () -> Unit,
+  onSelectConversation: (String) -> Unit,
+  onDeleteConversation: (Boolean) -> Unit,
   onStartRecommendedFocus: (Int) -> Unit,
   onCompleteRecommendedTask: (TaskEntity) -> Unit,
   onTriggerAnnouncement: (AnnouncementType) -> Unit,
@@ -563,8 +584,12 @@ fun CentralAiAssistantSheet(
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var draftCommand by remember { mutableStateOf("") }
+  var forceCloudReasoning by remember { mutableStateOf(false) }
+  var showToolsPanel by remember { mutableStateOf(false) }
+  var showDeleteHistoryConfirm by remember { mutableStateOf(false) }
   var pendingVoiceStartAfterGrant by remember { mutableStateOf(false) }
   var showMicRationale by remember { mutableStateOf(false) }
+  val listState = rememberLazyListState()
 
   val audioPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission(),
@@ -578,10 +603,17 @@ fun CentralAiAssistantSheet(
     }
   }
 
+  LaunchedEffect(chatHistory.size, cloudState) {
+    if (chatHistory.isNotEmpty()) {
+      listState.animateScrollToItem((chatHistory.size - 1).coerceAtLeast(0))
+    }
+  }
+
   val nextAlarm = alarms.firstOrNull { it.enabled }
   val nextAlarmLabel = nextAlarm?.let {
     "${DateKeyHelper.formatFullTime12h(it.hour24, it.minute)} · ${it.label}"
   } ?: "No active alarms armed"
+  val isThinking = voiceState.phase == VoiceEnginePhase.PROCESSING || cloudState is AlfredCloudState.Loading
 
   ModalBottomSheet(
     onDismissRequest = onDismiss,
@@ -593,13 +625,14 @@ fun CentralAiAssistantSheet(
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .verticalScroll(rememberScrollState())
-        .padding(horizontal = 20.dp)
-        .padding(bottom = 28.dp)
+        .fillMaxHeight(0.92f)
+        .imePadding()
+        .padding(horizontal = 16.dp)
+        .padding(bottom = 16.dp)
         .testTag("alfred_assistant_sheet"),
-      verticalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      // 1. Header with Speaker Mute + Replay Audio
+      // 1. Header: ALFRED identity + New Chat + Delete History + Audio Controls
       Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -608,11 +641,11 @@ fun CentralAiAssistantSheet(
         Row(
           modifier = Modifier.weight(1f),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           Box(
             modifier = Modifier
-              .size(48.dp)
+              .size(44.dp)
               .clip(CircleShape)
               .background(DeepTealPrimary)
               .border(2.dp, PolishedCopperBright, CircleShape),
@@ -622,19 +655,21 @@ fun CentralAiAssistantSheet(
               imageVector = Icons.Filled.RecordVoiceOver,
               contentDescription = "ALFRED Central Assistant",
               tint = PolishedCopperBright,
-              modifier = Modifier.size(24.dp),
+              modifier = Modifier.size(22.dp),
             )
           }
           Column {
             Text(
-              text = "ALFRED Assistant",
+              text = "ALFRED Chat",
               style = MaterialTheme.typography.titleLarge,
               color = OnDeepTeal,
             )
             Text(
-              text = "${if (isOnline) "Online (Gemini + Offline)" else "Offline Rule Engine"} · ${activeTab.label}",
+              text = "${if (isOnline) "Gemini + Local Engine" else "Offline Engine"} · ${activeTab.label}",
               style = MaterialTheme.typography.bodySmall,
               color = PolishedCopperBright,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
             )
           }
         }
@@ -667,144 +702,485 @@ fun CentralAiAssistantSheet(
               tint = if (voiceState.voiceMuted) OnDeepTealMuted else OnDeepTeal,
             )
           }
+          IconButton(
+            onClick = onStartNewConversation,
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("alfred_new_chat_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Add,
+              contentDescription = "New Chat",
+              tint = PolishedCopperBright,
+            )
+          }
+          IconButton(
+            onClick = { showDeleteHistoryConfirm = true },
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("alfred_delete_history_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.DeleteOutline,
+              contentDescription = "Delete chat history",
+              tint = Color(0xFFFF8A80),
+            )
+          }
         }
       }
 
-      // 2. Voice Input Activation & Microphone Controls
-      Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = DeepTealPrimary.copy(alpha = 0.65f),
-        border = BorderStroke(1.2.dp, PolishedCopperBright.copy(alpha = 0.7f)),
+      // 2. Quick Controls Strip: Tools Toggle, Reasoning Mode, Saved Conversations
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
       ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(14.dp),
-          verticalArrangement = Arrangement.spacedBy(10.dp),
+        Surface(
+          shape = RoundedCornerShape(50),
+          color = if (showToolsPanel) PolishedCopper else DeepTealPrimary,
+          border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.7f)),
+          onClick = { showToolsPanel = !showToolsPanel },
+          modifier = Modifier.testTag("alfred_tools_toggle"),
         ) {
           Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
           ) {
-            val isListening = voiceState.phase == VoiceEnginePhase.LISTENING
-            Surface(
-              shape = CircleShape,
-              color = if (isListening) Color(0xFFB71C1C) else PolishedCopper,
-              border = BorderStroke(2.dp, PolishedCopperBright),
-              modifier = Modifier
-                .size(54.dp)
-                .minimumInteractiveComponentSize()
-                .testTag("alfred_mic_button"),
-              onClick = {
-                if (isListening) {
-                  onStopVoiceListening()
-                } else if (!recordAudioGranted) {
-                  showMicRationale = true
-                } else {
-                  onStartVoiceListening()
-                }
+            Icon(Icons.Filled.Tune, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+            Text(
+              text = if (showToolsPanel) "Hide Tools" else "Tools & Status",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color.White,
+            )
+          }
+        }
+
+        Surface(
+          shape = RoundedCornerShape(50),
+          color = if (forceCloudReasoning && isOnline) PolishedCopper.copy(alpha = 0.34f) else Color(0xFF052427),
+          border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.6f)),
+          enabled = isOnline,
+          onClick = { forceCloudReasoning = !forceCloudReasoning },
+          modifier = Modifier.testTag("alfred_cloud_mode_toggle"),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = PolishedCopperBright, modifier = Modifier.size(13.dp))
+            Text(
+              text = when {
+                !isOnline -> "Offline"
+                forceCloudReasoning -> "Always Gemini"
+                else -> "Smart Auto"
               },
+              style = MaterialTheme.typography.labelSmall,
+              color = PolishedCopperBright,
+            )
+          }
+        }
+
+        if (conversationIds.size > 1) {
+          conversationIds.take(4).forEachIndexed { idx, convId ->
+            val selected = convId == activeConversationId
+            Surface(
+              shape = RoundedCornerShape(50),
+              color = if (selected) PolishedCopper.copy(alpha = 0.35f) else Color(0xFF052427),
+              border = BorderStroke(1.dp, if (selected) PolishedCopperBright else DeepTealGlow),
+              onClick = { onSelectConversation(convId) },
             ) {
-              Box(contentAlignment = Alignment.Center) {
-                if (voiceState.phase == VoiceEnginePhase.PROCESSING || cloudState is AlfredCloudState.Loading) {
-                  CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = Color.White,
-                    strokeWidth = 2.5.dp,
-                  )
-                } else {
-                  Icon(
-                    imageVector = if (isListening) Icons.Filled.Stop else if (recordAudioGranted) Icons.Filled.Mic else Icons.Filled.MicOff,
-                    contentDescription = stringResource(id = R.string.cd_alfred_mic),
-                    tint = Color.White,
-                    modifier = Modifier.size(26.dp),
+              Text(
+                text = "Chat ${idx + 1}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) OnDeepTeal else OnDeepTealMuted,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              )
+            }
+          }
+        }
+      }
+
+      // Optional Collapsible Tools & Shared Status Drawer
+      if (showToolsPanel) {
+        Surface(
+          shape = RoundedCornerShape(18.dp),
+          color = Color(0xFF06292D),
+          border = BorderStroke(1.dp, DeepTealGlow.copy(alpha = 0.7f)),
+          modifier = Modifier.testTag("alfred_next_task_card"),
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .verticalScroll(rememberScrollState())
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(
+                text = "Next Suggestion: ${nextRecommendation.headline}",
+                style = MaterialTheme.typography.titleSmall,
+                color = OnDeepTeal,
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+              )
+              Button(
+                onClick = { onStartRecommendedFocus(nextRecommendation.suggestedFocusMinutes) },
+                colors = ButtonDefaults.buttonColors(containerColor = PolishedCopper),
+                modifier = Modifier.height(34.dp),
+              ) {
+                Text("${nextRecommendation.suggestedFocusMinutes}m Focus", style = MaterialTheme.typography.labelSmall, color = Color.White)
+              }
+            }
+            Text(
+              text = "Dashboard: ${productivity.completedTasks}/${productivity.totalTasks} tasks · Next Alarm: $nextAlarmLabel · Focus ${if (focusActive) "Active" else "Standby"} · Study ${if (studyModeActive) "On" else "Off"}",
+              style = MaterialTheme.typography.bodySmall,
+              color = OnDeepTealMuted,
+            )
+            if (latestAnnouncement != null) {
+              Text(
+                text = "Latest Cue: ${latestAnnouncement.message}",
+                style = MaterialTheme.typography.bodySmall,
+                color = PolishedCopperBright,
+              )
+            }
+            Row(
+              modifier = Modifier.horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              Surface(
+                shape = RoundedCornerShape(50),
+                color = if (voiceState.preferOfflineRecognition || !isOnline) PolishedCopper.copy(alpha = 0.28f) else DeepTealDark,
+                border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.6f)),
+                onClick = onToggleOfflineVoice,
+                modifier = Modifier.testTag("alfred_offline_voice_toggle"),
+              ) {
+                Text(
+                  text = if (voiceState.preferOfflineRecognition || !isOnline) "Offline Voice: On" else "Voice: Auto",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = PolishedCopperBright,
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+              }
+              listOf(
+                AnnouncementType.MORNING_WAKEUP to "Morning Briefing",
+                AnnouncementType.DAILY_REPORT_READY to "Daily Report Cue",
+              ).forEach { (type, label) ->
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = DeepTealPrimary,
+                  border = BorderStroke(1.dp, DeepTealGlow),
+                  onClick = { onTriggerAnnouncement(type) },
+                ) {
+                  Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = OnDeepTeal,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                   )
                 }
               }
             }
-
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-              Text(
-                text = when (voiceState.phase) {
-                  VoiceEnginePhase.LISTENING -> "Listening... Tap mic to stop"
-                  VoiceEnginePhase.PROCESSING -> "Processing your command..."
-                  VoiceEnginePhase.SPEAKING -> "Speaking response aloud..."
-                  VoiceEnginePhase.UNAVAILABLE -> "Speech service unavailable"
-                  VoiceEnginePhase.IDLE -> if (recordAudioGranted) "Tap Mic to Speak to ALFRED" else "Grant Microphone Access to Speak"
-                },
-                style = MaterialTheme.typography.titleSmall,
-                color = OnDeepTeal,
-              )
-              Text(
-                text = voiceState.partialTranscript.ifBlank { voiceState.statusNote },
-                style = MaterialTheme.typography.bodySmall,
-                color = OnDeepTealMuted,
-              )
-            }
           }
+        }
+      }
 
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+      // 3. Full-Height Scrollable Conversation Feed
+      Surface(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xFF041E21),
+        border = BorderStroke(1.dp, DeepTealGlow.copy(alpha = 0.45f)),
+      ) {
+        if (chatHistory.isEmpty() && !isThinking) {
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .padding(24.dp),
+            contentAlignment = Alignment.Center,
           ) {
-            Surface(
-              shape = RoundedCornerShape(50),
-              color = if (voiceState.preferOfflineRecognition || !isOnline) PolishedCopper.copy(alpha = 0.28f) else DeepTealDark,
-              border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.6f)),
-              onClick = onToggleOfflineVoice,
-              modifier = Modifier.testTag("alfred_offline_voice_toggle"),
-            ) {
-              Text(
-                text = if (voiceState.preferOfflineRecognition || !isOnline) "Offline Voice Pack: Preferred" else "Voice Mode: Auto",
-                style = MaterialTheme.typography.labelSmall,
-                color = PolishedCopperBright,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-              )
-            }
-
             Text(
-              text = if (voiceState.ttsReady) "TTS Ready" else "TTS Pending/Text",
-              style = MaterialTheme.typography.labelSmall,
+              text = "Ask ALFRED about your tasks, schedule, alarms, focus sessions, or productivity report.",
+              style = MaterialTheme.typography.bodyMedium,
               color = OnDeepTealMuted,
             )
           }
+        } else {
+          LazyColumn(
+            state = listState,
+            modifier = Modifier
+              .fillMaxSize()
+              .padding(horizontal = 12.dp, vertical = 10.dp)
+              .testTag("alfred_chat_list"),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            items(chatHistory, key = { "${it.id}_${it.timestampMillis}" }) { entry ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (entry.isUser) Arrangement.End else Arrangement.Start,
+              ) {
+                Surface(
+                  modifier = Modifier.widthIn(max = 310.dp),
+                  shape = RoundedCornerShape(
+                    topStart = 18.dp,
+                    topEnd = 18.dp,
+                    bottomStart = if (entry.isUser) 18.dp else 4.dp,
+                    bottomEnd = if (entry.isUser) 4.dp else 18.dp,
+                  ),
+                  color = if (entry.isUser) PolishedCopper.copy(alpha = 0.28f) else DeepTealPrimary.copy(alpha = 0.62f),
+                  border = BorderStroke(
+                    1.dp,
+                    if (entry.isUser) PolishedCopperBright.copy(alpha = 0.6f) else DeepTealGlow.copy(alpha = 0.5f),
+                  ),
+                ) {
+                  Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      Text(
+                        text = entry.sourceLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = PolishedCopperBright,
+                      )
+                      Text(
+                        text = DateKeyHelper.formatMillisTime12h(entry.timestampMillis),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = OnDeepTealMuted,
+                      )
+                    }
+                    Text(
+                      text = entry.text,
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = OnDeepTeal,
+                    )
+                    entry.executedActions.forEach { actionBadge ->
+                      Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                      ) {
+                        Icon(
+                          imageVector = Icons.Filled.CheckCircle,
+                          contentDescription = null,
+                          tint = Color(0xFF81C784),
+                          modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                          text = actionBadge,
+                          style = MaterialTheme.typography.labelSmall,
+                          color = Color(0xFFA5D6A7),
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
 
-          val activeErr = voiceState.errorMessage ?: (cloudState as? AlfredCloudState.Error)?.message
-          if (!activeErr.isNullOrBlank()) {
-            Surface(
-              shape = RoundedCornerShape(12.dp),
-              color = Color(0xFF4A191C),
-              border = BorderStroke(1.dp, Color(0xFFE57373)),
-            ) {
-              Text(
-                text = activeErr,
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFFFEBEE),
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-              )
+            if (isThinking) {
+              item(key = "alfred_loading_indicator") {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.Start,
+                ) {
+                  Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = DeepTealPrimary.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, DeepTealGlow.copy(alpha = 0.5f)),
+                  ) {
+                    Row(
+                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                      CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = PolishedCopperBright,
+                        strokeWidth = 2.dp,
+                      )
+                      Text(
+                        text = "ALFRED is thinking...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OnDeepTeal,
+                      )
+                    }
+                  }
+                }
+              }
             }
           }
         }
       }
 
-      // 3. Command Input + Offline / Gemini Ask
+      // 4. Quick Prompt Chips
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        listOf(
+          "What is my next task",
+          "Read daily report",
+          "Organize my day",
+          "Start 25m study",
+          "Set alarm for 6:30 AM",
+        ).forEach { cmd ->
+          Surface(
+            shape = RoundedCornerShape(50),
+            color = DeepTealPrimary,
+            border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.6f)),
+            onClick = { onSubmitCommand(cmd, false) },
+          ) {
+            Text(
+              text = cmd,
+              style = MaterialTheme.typography.labelSmall,
+              color = OnDeepTeal,
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            )
+          }
+        }
+      }
+
+      // Error & Pending Action Confirmation Banners
+      val activeErr = voiceState.errorMessage ?: (cloudState as? AlfredCloudState.Error)?.message
+      if (!activeErr.isNullOrBlank()) {
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = Color(0xFF4A191C),
+          border = BorderStroke(1.dp, Color(0xFFE57373)),
+        ) {
+          Text(
+            text = activeErr,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFFFEBEE),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+          )
+        }
+      }
+
+      if (pendingAction != null) {
+        Surface(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("alfred_confirmation_card"),
+          shape = RoundedCornerShape(16.dp),
+          color = if (pendingAction.isDestructive) Color(0xFF3E1418) else Color(0xFF0A3236),
+          border = BorderStroke(
+            1.5.dp,
+            if (pendingAction.isDestructive) Color(0xFFE57373) else PolishedCopperBright,
+          ),
+        ) {
+          Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text = "CONFIRM: ${pendingAction.title}",
+              style = MaterialTheme.typography.titleSmall,
+              color = OnDeepTeal,
+            )
+            Text(
+              text = pendingAction.description,
+              style = MaterialTheme.typography.bodySmall,
+              color = OnDeepTealMuted,
+            )
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              OutlinedButton(
+                onClick = onCancelPendingAction,
+                border = BorderStroke(1.dp, OnDeepTealMuted.copy(alpha = 0.6f)),
+                modifier = Modifier
+                  .weight(1f)
+                  .height(42.dp)
+                  .testTag("alfred_cancel_action_button"),
+              ) {
+                Text("Cancel", color = OnDeepTeal)
+              }
+              Button(
+                onClick = onConfirmPendingAction,
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = if (pendingAction.isDestructive) VisionDangerRed else PolishedCopper,
+                ),
+                modifier = Modifier
+                  .weight(1f)
+                  .height(42.dp)
+                  .testTag("alfred_confirm_action_button"),
+              ) {
+                Text("Confirm", color = Color.White, fontWeight = FontWeight.SemiBold)
+              }
+            }
+          }
+        }
+      }
+
+      if (voiceState.phase == VoiceEnginePhase.LISTENING && voiceState.partialTranscript.isNotBlank()) {
+        Text(
+          text = "Heard: \"${voiceState.partialTranscript}\"",
+          style = MaterialTheme.typography.bodySmall,
+          color = PolishedCopperBright,
+        )
+      }
+
+      // 5. Persistent Bottom Composer Bar (Mic + Text Input + Send)
       Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
+        val isListening = voiceState.phase == VoiceEnginePhase.LISTENING
+        Surface(
+          shape = CircleShape,
+          color = if (isListening) Color(0xFFB71C1C) else DeepTealPrimary,
+          border = BorderStroke(1.5.dp, PolishedCopperBright),
+          modifier = Modifier
+            .size(48.dp)
+            .minimumInteractiveComponentSize()
+            .testTag("alfred_mic_button"),
+          onClick = {
+            if (isListening) {
+              onStopVoiceListening()
+            } else if (!recordAudioGranted) {
+              showMicRationale = true
+            } else {
+              onStartVoiceListening()
+            }
+          },
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = if (isListening) Icons.Filled.Stop else if (recordAudioGranted) Icons.Filled.Mic else Icons.Filled.MicOff,
+              contentDescription = stringResource(id = R.string.cd_alfred_mic),
+              tint = Color.White,
+              modifier = Modifier.size(22.dp),
+            )
+          }
+        }
+
         OutlinedTextField(
           value = draftCommand,
           onValueChange = { draftCommand = it },
-          placeholder = { Text("Ask ALFRED or issue command...", color = OnDeepTealMuted) },
+          placeholder = { Text("Message ALFRED...", color = OnDeepTealMuted) },
           singleLine = true,
           keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
           keyboardActions = KeyboardActions(
             onSend = {
               if (draftCommand.isNotBlank()) {
-                onSubmitCommand(draftCommand, false)
+                onSubmitCommand(draftCommand, forceCloudReasoning && isOnline)
                 draftCommand = ""
               }
             },
@@ -821,41 +1197,18 @@ fun CentralAiAssistantSheet(
             .testTag("alfred_command_input"),
         )
 
-        if (isOnline) {
-          IconButton(
-            onClick = {
-              if (draftCommand.isNotBlank()) {
-                onSubmitCommand(draftCommand, true)
-                draftCommand = ""
-              }
-            },
-            enabled = draftCommand.isNotBlank(),
-            modifier = Modifier
-              .size(48.dp)
-              .clip(CircleShape)
-              .background(DeepTealPrimary)
-              .testTag("alfred_gemini_button"),
-          ) {
-            Icon(
-              imageVector = Icons.Filled.AutoAwesome,
-              contentDescription = "Ask Gemini Cloud AI",
-              tint = PolishedCopperBright,
-            )
-          }
-        }
-
         IconButton(
           onClick = {
             if (draftCommand.isNotBlank()) {
-              onSubmitCommand(draftCommand, false)
+              onSubmitCommand(draftCommand, forceCloudReasoning && isOnline)
               draftCommand = ""
             }
           },
-          enabled = draftCommand.isNotBlank(),
+          enabled = draftCommand.isNotBlank() && !isThinking,
           modifier = Modifier
             .size(48.dp)
             .clip(CircleShape)
-            .background(PolishedCopper)
+            .background(if (draftCommand.isNotBlank() && !isThinking) PolishedCopper else PolishedCopper.copy(alpha = 0.45f))
             .testTag("alfred_send_button"),
         ) {
           Icon(
@@ -865,222 +1218,43 @@ fun CentralAiAssistantSheet(
           )
         }
       }
-
-      // 4. Next Task Recommendation (Real Room Data)
-      Surface(
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("alfred_next_task_card"),
-        shape = RoundedCornerShape(18.dp),
-        color = Color(0xFF06292D),
-        border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.65f)),
-      ) {
-        Column(
-          modifier = Modifier.padding(14.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          Text(
-            text = "NEXT TASK SUGGESTION (REAL SCHEDULE DATA)",
-            style = MaterialTheme.typography.labelSmall,
-            color = PolishedCopperBright,
-          )
-          Text(
-            text = nextRecommendation.headline,
-            style = MaterialTheme.typography.titleMedium,
-            color = OnDeepTeal,
-          )
-          Text(
-            text = nextRecommendation.rationale,
-            style = MaterialTheme.typography.bodySmall,
-            color = OnDeepTealMuted,
-          )
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-              onClick = { onStartRecommendedFocus(nextRecommendation.suggestedFocusMinutes) },
-              colors = ButtonDefaults.buttonColors(containerColor = PolishedCopper),
-              modifier = Modifier.height(40.dp),
-            ) {
-              Text("Start ${nextRecommendation.suggestedFocusMinutes}m Focus", style = MaterialTheme.typography.labelLarge, color = Color.White)
-            }
-            nextRecommendation.task?.let { recTask ->
-              OutlinedButton(
-                onClick = { onCompleteRecommendedTask(recTask) },
-                border = BorderStroke(1.dp, PolishedCopperBright),
-                modifier = Modifier.height(40.dp),
-              ) {
-                Text("Mark Done", style = MaterialTheme.typography.labelLarge, color = PolishedCopperBright)
-              }
-            }
-          }
-        }
-      }
-
-      // 5. Live Cross-Tab Status Snapshot
-      Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = DeepTealPrimary.copy(alpha = 0.42f),
-        border = BorderStroke(1.dp, DeepTealGlow.copy(alpha = 0.55f)),
-      ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-          Text(
-            text = "SHARED STATE ACROSS ALL 4 TABS",
-            style = MaterialTheme.typography.labelSmall,
-            color = PolishedCopperBright,
-          )
-          Text(
-            text = "Dashboard: ${productivity.completedTasks}/${productivity.totalTasks} tasks (${productivity.productivityPercent}%) · Next Alarm: $nextAlarmLabel",
-            style = MaterialTheme.typography.bodySmall,
-            color = OnDeepTeal,
-          )
-          Text(
-            text = "Distraction: Focus ${if (focusActive) "Active" else "Standby"} · Study ${if (studyModeActive) "On" else "Off"} · ${productivity.focusMinutesToday}m today",
-            style = MaterialTheme.typography.bodySmall,
-            color = OnDeepTealMuted,
-          )
-          if (latestAnnouncement != null) {
-            Text(
-              text = "Latest Cue: \"${latestAnnouncement.message}\"",
-              style = MaterialTheme.typography.bodySmall,
-              color = PolishedCopperBright,
-            )
-          }
-        }
-      }
-
-      // 6. Quick Cross-Tab Commands & Personalised Announcements
-      Text(
-        text = "QUICK CROSS-TAB COMMANDS & ANNOUNCEMENTS",
-        style = MaterialTheme.typography.labelSmall,
-        color = PolishedCopperBright,
-      )
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        listOf(
-          "Organize my day",
-          "What is my next task",
-          "Read daily report",
-          "Start 25m study",
-          "Set alarm for 6:30 AM",
-          "Block Instagram",
-        ).forEach { cmd ->
-          Surface(
-            shape = RoundedCornerShape(50),
-            color = DeepTealPrimary,
-            border = BorderStroke(1.dp, PolishedCopperBorder.copy(alpha = 0.6f)),
-            onClick = { onSubmitCommand(cmd, false) },
-          ) {
-            Text(
-              text = cmd,
-              style = MaterialTheme.typography.labelSmall,
-              color = OnDeepTeal,
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-          }
-        }
-      }
-
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        listOf(
-          AnnouncementType.MORNING_WAKEUP to "Speak Morning Briefing",
-          AnnouncementType.UPCOMING_TASK to "Upcoming Task Alert",
-          AnnouncementType.MILESTONE_COMPLETED to "Completed Milestone",
-          AnnouncementType.DAILY_REPORT_READY to "Daily Report Cue",
-        ).forEach { (type, label) ->
-          Surface(
-            shape = RoundedCornerShape(50),
-            color = Color(0xFF052427),
-            border = BorderStroke(1.dp, DeepTealGlow),
-            onClick = { onTriggerAnnouncement(type) },
-          ) {
-            Text(
-              text = label,
-              style = MaterialTheme.typography.labelSmall,
-              color = PolishedCopperBright,
-              modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-            )
-          }
-        }
-      }
-
-      // 7. Conversation & Executed Action Feed
-      Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = Color(0xFF041E21),
-        border = BorderStroke(1.dp, DeepTealGlow.copy(alpha = 0.45f)),
-      ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-          verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Text(
-            text = "ALFRED ACTIVITY LOG",
-            style = MaterialTheme.typography.labelSmall,
-            color = PolishedCopperBright,
-          )
-          chatHistory.takeLast(6).forEach { entry ->
-            Surface(
-              modifier = Modifier.fillMaxWidth(),
-              shape = RoundedCornerShape(14.dp),
-              color = if (entry.isUser) PolishedCopper.copy(alpha = 0.22f) else DeepTealPrimary.copy(alpha = 0.48f),
-              border = BorderStroke(
-                0.8.dp,
-                if (entry.isUser) PolishedCopperBright.copy(alpha = 0.5f) else DeepTealGlow.copy(alpha = 0.4f),
-              ),
-            ) {
-              Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-              ) {
-                Text(
-                  text = entry.sourceLabel,
-                  style = MaterialTheme.typography.labelSmall,
-                  color = PolishedCopperBright,
-                )
-                Text(
-                  text = entry.text,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = OnDeepTeal,
-                )
-                entry.executedActions.forEach { actionBadge ->
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.CheckCircle,
-                      contentDescription = null,
-                      tint = Color(0xFF81C784),
-                      modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                      text = actionBadge,
-                      style = MaterialTheme.typography.labelSmall,
-                      color = Color(0xFFA5D6A7),
-                    )
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
     }
+  }
+
+  if (showDeleteHistoryConfirm) {
+    AlertDialog(
+      onDismissRequest = { showDeleteHistoryConfirm = false },
+      title = { Text("Delete ALFRED Chat History?") },
+      text = {
+        Text("Delete the current conversation or clear all saved ALFRED conversations from local storage?")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showDeleteHistoryConfirm = false
+            onDeleteConversation(true)
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = VisionDangerRed),
+        ) {
+          Text("Clear All", color = Color.White)
+        }
+      },
+      dismissButton = {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          TextButton(onClick = { showDeleteHistoryConfirm = false }) {
+            Text("Cancel")
+          }
+          TextButton(
+            onClick = {
+              showDeleteHistoryConfirm = false
+              onDeleteConversation(false)
+            },
+          ) {
+            Text("This Chat Only")
+          }
+        }
+      },
+    )
   }
 
   if (showMicRationale) {
@@ -1115,7 +1289,9 @@ fun CentralAiAssistantSheet(
 @Composable
 fun SystemMenuAndPermissionsSheet(
   activeTab: VisionTab,
+  themeMode: VisionThemeMode,
   permissions: PermissionStatusSnapshot,
+  onSetThemeMode: (VisionThemeMode) -> Unit,
   onSelectTab: (VisionTab) -> Unit,
   onRefreshPermissions: () -> Unit,
   onDismiss: () -> Unit,
@@ -1147,7 +1323,7 @@ fun SystemMenuAndPermissionsSheet(
     ) {
       VisionLogo(iconSize = 30.dp, showWordmark = true)
       Text(
-        text = "Permissions, Background Execution & Navigation",
+        text = "Appearance, Permissions & Navigation",
         style = MaterialTheme.typography.bodyMedium,
         color = palette.onBackgroundMuted,
       )
@@ -1155,9 +1331,47 @@ fun SystemMenuAndPermissionsSheet(
       HorizontalDivider(color = palette.cardBorder.copy(alpha = 0.35f))
 
       Text(
+        text = "APPEARANCE & TEXT CONTRAST",
+        style = MaterialTheme.typography.labelSmall,
+        color = palette.accentOnDarkCard,
+      )
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        VisionThemeMode.entries.forEach { mode ->
+          val selected = mode == themeMode
+          Surface(
+            modifier = Modifier
+              .weight(1f)
+              .minimumInteractiveComponentSize()
+              .testTag("theme_mode_${mode.name.lowercase()}"),
+            shape = RoundedCornerShape(14.dp),
+            color = if (selected) palette.accent else palette.darkGlassCard,
+            border = BorderStroke(1.dp, if (selected) palette.accent else palette.darkCardBorder),
+            onClick = { onSetThemeMode(mode) },
+          ) {
+            Box(
+              modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                text = mode.label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (selected) Color.White else palette.onDarkCard,
+                maxLines = 1,
+              )
+            }
+          }
+        }
+      }
+
+      HorizontalDivider(color = palette.cardBorder.copy(alpha = 0.35f))
+
+      Text(
         text = "ANDROID PERMISSIONS & BACKGROUND STATUS",
         style = MaterialTheme.typography.labelSmall,
-        color = palette.accentSoft,
+        color = palette.accentOnDarkCard,
       )
 
       PermissionRowCard(
@@ -1217,11 +1431,11 @@ fun SystemMenuAndPermissionsSheet(
       Text(
         text = "TABS",
         style = MaterialTheme.typography.labelSmall,
-        color = palette.accentSoft,
+        color = palette.accentOnDarkCard,
       )
 
       VisionTab.entries.forEach { tab ->
-        val tabPalette = paletteFor(tab)
+        val tabPalette = paletteFor(tab, isDarkTheme = palette.isDarkMode)
         val isCurrent = tab == activeTab
         Surface(
           modifier = Modifier.fillMaxWidth(),
@@ -1246,7 +1460,7 @@ fun SystemMenuAndPermissionsSheet(
             Text(
               text = if (isCurrent) "Active" else "Open",
               style = MaterialTheme.typography.labelSmall,
-              color = if (isCurrent) tabPalette.accent else palette.accentSoft,
+              color = if (isCurrent) tabPalette.accentOnPrimaryCard else palette.accentOnDarkCard,
             )
           }
         }
@@ -1290,8 +1504,8 @@ private fun PermissionRowCard(
       }
       Surface(
         shape = RoundedCornerShape(50),
-        color = if (granted) Color(0xFF2E7D32).copy(alpha = 0.28f) else palette.accent,
-        border = BorderStroke(1.dp, if (granted) Color(0xFF66BB6A) else palette.accentSoft),
+        color = if (granted) Color(0xFF236E29) else palette.accent,
+        border = BorderStroke(1.dp, if (granted) Color(0xFF4CAF50) else palette.accent),
         onClick = onAction,
       ) {
         Text(

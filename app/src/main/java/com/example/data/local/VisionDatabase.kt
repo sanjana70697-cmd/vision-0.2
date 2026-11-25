@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,8 +21,10 @@ import kotlinx.coroutines.launch
     FocusSessionEntity::class,
     FocusConfigEntity::class,
     DailyProductivitySnapshotEntity::class,
+    ActivitySessionEntity::class,
+    AlfredChatMessageEntity::class,
   ],
-  version = 1,
+  version = 2,
   exportSchema = false,
 )
 abstract class VisionDatabase : RoomDatabase() {
@@ -30,6 +33,81 @@ abstract class VisionDatabase : RoomDatabase() {
   companion object {
     @Volatile
     private var INSTANCE: VisionDatabase? = null
+
+    val MIGRATION_1_2 = object : Migration(1, 2) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE alarms ADD COLUMN scheduledDateKey TEXT NOT NULL DEFAULT ''")
+        db.execSQL(
+          """
+          CREATE TABLE IF NOT EXISTS `activity_sessions` (
+            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+            `activityType` TEXT NOT NULL,
+            `dateKey` TEXT NOT NULL,
+            `titleOrSkillName` TEXT NOT NULL,
+            `notes` TEXT NOT NULL,
+            `startTimeMillis` INTEGER NOT NULL,
+            `endTimeMillis` INTEGER NOT NULL,
+            `durationMinutes` INTEGER NOT NULL,
+            `source` TEXT NOT NULL,
+            `createdAtMillis` INTEGER NOT NULL
+          )
+          """.trimIndent(),
+        )
+        db.execSQL(
+          """
+          CREATE TABLE IF NOT EXISTS `alfred_chat_messages` (
+            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+            `conversationId` TEXT NOT NULL,
+            `isUser` INTEGER NOT NULL,
+            `text` TEXT NOT NULL,
+            `sourceLabel` TEXT NOT NULL,
+            `executedActionsSerialized` TEXT NOT NULL,
+            `timestampMillis` INTEGER NOT NULL
+          )
+          """.trimIndent(),
+        )
+        // Carry over historical non-zero focus sessions non-destructively
+        db.execSQL(
+          """
+          INSERT INTO activity_sessions (
+            activityType, dateKey, titleOrSkillName, notes, startTimeMillis, endTimeMillis, durationMinutes, source, createdAtMillis
+          )
+          SELECT
+            'FOCUS',
+            dateKey,
+            CASE WHEN studyModeEnabled = 1 THEN 'Study Focus Session' ELSE 'Focus Session' END,
+            'Migrated focus session (' || status || ')',
+            startTimeMillis,
+            CASE WHEN endTimeMillis IS NOT NULL AND endTimeMillis > startTimeMillis THEN endTimeMillis ELSE startTimeMillis + (actualMinutes * 60000) END,
+            actualMinutes,
+            'TIMER',
+            startTimeMillis
+          FROM focus_sessions
+          WHERE actualMinutes > 0
+          """.trimIndent(),
+        )
+        // Carry over historical non-zero habit logs (Yoga & Skill Dev) non-destructively
+        db.execSQL(
+          """
+          INSERT INTO activity_sessions (
+            activityType, dateKey, titleOrSkillName, notes, startTimeMillis, endTimeMillis, durationMinutes, source, createdAtMillis
+          )
+          SELECT
+            CASE WHEN trackType = 'YOGA_EXERCISE' THEN 'YOGA' ELSE 'SKILL' END,
+            dateKey,
+            label,
+            notes,
+            CASE WHEN trackType = 'YOGA_EXERCISE' THEN COALESCE(CAST(strftime('%s', dateKey || ' 07:00:00') AS INTEGER) * 1000, 1700000000000) ELSE COALESCE(CAST(strftime('%s', dateKey || ' 10:00:00') AS INTEGER) * 1000, 1700010800000) END,
+            (CASE WHEN trackType = 'YOGA_EXERCISE' THEN COALESCE(CAST(strftime('%s', dateKey || ' 07:00:00') AS INTEGER) * 1000, 1700000000000) ELSE COALESCE(CAST(strftime('%s', dateKey || ' 10:00:00') AS INTEGER) * 1000, 1700010800000) END) + (minutesLogged * 60000),
+            minutesLogged,
+            'MANUAL',
+            COALESCE(CAST(strftime('%s', dateKey || ' 07:00:00') AS INTEGER) * 1000, 1700000000000)
+          FROM habit_logs
+          WHERE minutesLogged > 0
+          """.trimIndent(),
+        )
+      }
+    }
 
     fun getInstance(context: Context): VisionDatabase {
       return INSTANCE ?: synchronized(this) {
@@ -43,7 +121,7 @@ abstract class VisionDatabase : RoomDatabase() {
         VisionDatabase::class.java,
         "vision_productivity.db",
       )
-        .fallbackToDestructiveMigration(dropAllTables = true)
+        .addMigrations(MIGRATION_1_2)
         .addCallback(
           object : Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {

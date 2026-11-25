@@ -57,7 +57,9 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("alfred_assistant_sheet").assertIsDisplayed()
     composeTestRule.onNodeWithTag("alfred_mic_button").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("alfred_next_task_card").assertIsDisplayed()
     composeTestRule.onNodeWithTag("alfred_command_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("alfred_tools_toggle").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("alfred_next_task_card").assertIsDisplayed()
   }
 }

@@ -33,6 +33,17 @@ object AlarmScheduler {
       .mapNotNull { it.trim().toIntOrNull() }
       .toSet()
 
+    if (repeatDays.isEmpty() && alarm.scheduledDateKey.isNotBlank()) {
+      val dateCal = DateKeyHelper.parseDateKeyToCalendar(alarm.scheduledDateKey)
+      if (dateCal != null) {
+        dateCal.set(Calendar.HOUR_OF_DAY, alarm.hour24)
+        dateCal.set(Calendar.MINUTE, alarm.minute)
+        dateCal.set(Calendar.SECOND, 0)
+        dateCal.set(Calendar.MILLISECOND, 0)
+        return dateCal.timeInMillis
+      }
+    }
+
     val candidate = Calendar.getInstance().apply {
       timeInMillis = fromMillis
       set(Calendar.HOUR_OF_DAY, alarm.hour24)

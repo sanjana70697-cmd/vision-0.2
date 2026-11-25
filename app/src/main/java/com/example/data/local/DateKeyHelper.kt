@@ -110,4 +110,76 @@ object DateKeyHelper {
       else -> days.joinToString(" ") { dayShortLabel(it).take(2) }
     }
   }
+
+  fun offsetDateKey(daysOffset: Int, nowMillis: Long = System.currentTimeMillis()): String {
+    val cal = Calendar.getInstance().apply {
+      timeInMillis = nowMillis
+      add(Calendar.DAY_OF_YEAR, daysOffset)
+    }
+    return keyFormatter.format(cal.time)
+  }
+
+  fun parseDateKeyToCalendar(dateKey: String): Calendar? {
+    val clean = dateKey.trim()
+    if (!Regex("""^\d{4}-\d{2}-\d{2}$""").matches(clean)) return null
+    return runCatching {
+      val fmt = keyFormatter.apply { isLenient = false }
+      val date = fmt.parse(clean) ?: return null
+      Calendar.getInstance().apply {
+        time = date
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+      }
+    }.getOrNull()
+  }
+
+  fun formatDateKeyDisplay(dateKey: String, nowMillis: Long = System.currentTimeMillis()): String {
+    if (dateKey.isBlank()) return ""
+    val today = todayKey(nowMillis)
+    val tomorrow = tomorrowKey(nowMillis)
+    val yesterday = offsetDateKey(-1, nowMillis)
+    val parsed = parseDateKeyToCalendar(dateKey)
+    val shortPretty = parsed?.let {
+      SimpleDateFormat("EEE, dd MMM", Locale.US).format(it.time)
+    } ?: dateKey
+    return when (dateKey) {
+      today -> "Today · $shortPretty"
+      tomorrow -> "Tomorrow · $shortPretty"
+      yesterday -> "Yesterday · $shortPretty"
+      else -> shortPretty
+    }
+  }
+
+  fun combineDateKeyAndTime(dateKey: String, hour24: Int, minute: Int): Long {
+    val base = parseDateKeyToCalendar(dateKey) ?: Calendar.getInstance()
+    base.set(Calendar.HOUR_OF_DAY, hour24.coerceIn(0, 23))
+    base.set(Calendar.MINUTE, minute.coerceIn(0, 59))
+    base.set(Calendar.SECOND, 0)
+    base.set(Calendar.MILLISECOND, 0)
+    return base.timeInMillis
+  }
+
+  fun formatMillisTime12h(millis: Long): String {
+    val cal = Calendar.getInstance().apply { timeInMillis = millis }
+    return formatFullTime12h(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+  }
+
+  fun formatMinutesSummary(totalMinutes: Int): String {
+    val mins = totalMinutes.coerceAtLeast(0)
+    if (mins < 60) return "${mins}m"
+    val hrs = mins / 60
+    val rem = mins % 60
+    return if (rem == 0) "${hrs}h" else "${hrs}h ${rem}m"
+  }
+
+  fun formatElapsedClock(totalSeconds: Long): String {
+    val secs = totalSeconds.coerceAtLeast(0L)
+    val h = secs / 3600L
+    val m = (secs % 3600L) / 60L
+    val s = secs % 60L
+    return if (h > 0L) String.format(Locale.US, "%02d:%02d:%02d", h, m, s)
+    else String.format(Locale.US, "%02d:%02d", m, s)
+  }
 }

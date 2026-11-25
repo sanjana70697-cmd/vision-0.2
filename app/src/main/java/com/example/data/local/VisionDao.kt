@@ -129,4 +129,54 @@ interface VisionDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun upsertDailySnapshot(snapshot: DailyProductivitySnapshotEntity)
+
+  // ---- Activity Sessions (Single Source of Truth for Focus, Yoga, Skill Dev) ----
+  @Query("SELECT * FROM activity_sessions WHERE dateKey = :dateKey ORDER BY startTimeMillis DESC, id DESC")
+  fun observeActivitySessionsForDate(dateKey: String): Flow<List<ActivitySessionEntity>>
+
+  @Query("SELECT * FROM activity_sessions ORDER BY dateKey DESC, startTimeMillis DESC, id DESC LIMIT 120")
+  fun observeRecentActivitySessions(): Flow<List<ActivitySessionEntity>>
+
+  @Query("SELECT * FROM activity_sessions WHERE dateKey = :dateKey ORDER BY startTimeMillis ASC")
+  suspend fun getActivitySessionsForDateSync(dateKey: String): List<ActivitySessionEntity>
+
+  @Query("SELECT * FROM activity_sessions WHERE dateKey = :dateKey AND activityType = :activityType ORDER BY startTimeMillis ASC")
+  suspend fun getActivitySessionsForDateAndTypeSync(dateKey: String, activityType: String): List<ActivitySessionEntity>
+
+  @Query("SELECT * FROM activity_sessions WHERE id = :id LIMIT 1")
+  suspend fun getActivitySessionByIdSync(id: Long): ActivitySessionEntity?
+
+  @Query("SELECT COUNT(DISTINCT dateKey) FROM activity_sessions WHERE activityType = 'YOGA'")
+  fun observeYogaActiveDaysCount(): Flow<Int>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertActivitySession(session: ActivitySessionEntity): Long
+
+  @Update
+  suspend fun updateActivitySession(session: ActivitySessionEntity)
+
+  @Query("DELETE FROM activity_sessions WHERE id = :id")
+  suspend fun deleteActivitySessionById(id: Long)
+
+  // ---- ALFRED Persistent Conversations ----
+  @Query("SELECT * FROM alfred_chat_messages WHERE conversationId = :conversationId ORDER BY timestampMillis ASC, id ASC")
+  fun observeChatMessages(conversationId: String): Flow<List<AlfredChatMessageEntity>>
+
+  @Query("SELECT conversationId FROM alfred_chat_messages GROUP BY conversationId ORDER BY MAX(timestampMillis) DESC")
+  fun observeConversationIds(): Flow<List<String>>
+
+  @Query("SELECT * FROM alfred_chat_messages WHERE conversationId = :conversationId ORDER BY timestampMillis ASC, id ASC")
+  suspend fun getChatMessagesSync(conversationId: String): List<AlfredChatMessageEntity>
+
+  @Query("SELECT conversationId FROM alfred_chat_messages ORDER BY timestampMillis DESC, id DESC LIMIT 1")
+  suspend fun getLatestConversationIdSync(): String?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertChatMessage(message: AlfredChatMessageEntity): Long
+
+  @Query("DELETE FROM alfred_chat_messages WHERE conversationId = :conversationId")
+  suspend fun deleteConversationMessages(conversationId: String)
+
+  @Query("DELETE FROM alfred_chat_messages")
+  suspend fun deleteAllChatMessages()
 }

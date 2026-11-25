@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.example.data.local.ActivitySessionEntity
+import com.example.data.local.DateKeyHelper
 import com.example.data.local.VisionDatabase
 import com.example.data.local.VisionRepository
 import com.example.domain.alfred.AlfredAnnouncementEngine
@@ -25,7 +27,8 @@ class FocusMonitorService : Service() {
     const val ACTION_START_FOCUS = "com.example.vision.ACTION_START_FOCUS"
     const val ACTION_PAUSE_FOCUS = "com.example.vision.ACTION_PAUSE_FOCUS"
     const val ACTION_RESET_FOCUS = "com.example.vision.ACTION_RESET_FOCUS"
-    const val ACTION_TRIGGER_STUDY_WARNING_CHECK = "com.example.vision.ACTION_TRIGGER_STUDY_WARNING_CHECK"
+    const val ACTION_START_STUDY_SESSION = "com.example.vision.ACTION_START_STUDY_SESSION"
+    const val ACTION_STOP_STUDY_SESSION = "com.example.vision.ACTION_STOP_STUDY_SESSION"
     const val ACTION_CANCEL_STUDY_WARNING = "com.example.vision.ACTION_CANCEL_STUDY_WARNING"
     const val EXTRA_PLANNED_MINUTES = "extra_planned_minutes"
 
@@ -52,11 +55,19 @@ class FocusMonitorService : Service() {
       context.startService(intent)
     }
 
-    fun triggerStudyWarningCheck(context: Context) {
+    fun startStudySession(context: Context, plannedMinutes: Int) {
       val intent = Intent(context, FocusMonitorService::class.java).apply {
-        action = ACTION_TRIGGER_STUDY_WARNING_CHECK
+        action = ACTION_START_STUDY_SESSION
+        putExtra(EXTRA_PLANNED_MINUTES, plannedMinutes)
       }
       ContextCompat.startForegroundService(context, intent)
+    }
+
+    fun stopStudySession(context: Context) {
+      val intent = Intent(context, FocusMonitorService::class.java).apply {
+        action = ACTION_STOP_STUDY_SESSION
+      }
+      context.startService(intent)
     }
 
     fun cancelStudyWarning(context: Context) {
@@ -69,8 +80,7 @@ class FocusMonitorService : Service() {
 
   private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private var tickerJob: Job? = null
-  private var youtubeContinuousSeconds = 0
-  private var lastNotifiedBlockedPkg: String? = null
+  private val distractionTracker = StudyDistractionTracker(cooldownMillis = 120_000L)
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,13 +90,14 @@ class FocusMonitorService : Service() {
 
     startFocusForeground(
       title = "VISION Focus Monitor",
-      body = "Focus & Study Mode monitoring active",
+      body = "Study & Focus monitoring active",
     )
 
     if (intent?.action == null) {
       serviceScope.launch {
         val cfg = repo.getFocusConfigSync()
-        if (cfg.activeTimerRunning || cfg.studyWarningActive) {
+        val persisted = ActiveTimerStore.get(this@FocusMonitorService, TimerActivityKind.FOCUS)
+        if (persisted.isRunning || cfg.activeTimerRunning || cfg.studyWarningActive) {
           ensureLoopRunning(repo)
         } else {
           stopForegroundAndSelf()
@@ -95,37 +106,70 @@ class FocusMonitorService : Service() {
       return START_NOT_STICKY
     }
 
-    when (intent?.action) {
-      ACTION_START_FOCUS -> {
-        val plannedMins = intent.getIntExtra(EXTRA_PLANNED_MINUTES, 25)
+    when (intent.action) {
+      ACTION_START_FOCUS, ACTION_START_STUDY_SESSION -> {
+        val isStudyExplicit = intent.action == ACTION_START_STUDY_SESSION
+        val plannedMins = intent.getIntExtra(EXTRA_PLANNED_MINUTES, 25).coerceIn(5, 180)
+        distractionTracker.reset()
         serviceScope.launch {
           val cfg = repo.getFocusConfigSync()
-          val initialRem = if (cfg.activeTimerRemainingSeconds > 0) cfg.activeTimerRemainingSeconds else plannedMins * 60
-          val sessionId = if (cfg.activeSessionId > 0L) cfg.activeSessionId
-          else repo.startFocusSession(plannedMins, cfg.studyModeEnabled).getOrDefault(0L)
+          val studyOn = isStudyExplicit || cfg.studyModeEnabled
+          val existingTimer = ActiveTimerStore.get(this@FocusMonitorService, TimerActivityKind.FOCUS)
+          val activeTimer = if (existingTimer.isActive && !existingTimer.isRunning && !isStudyExplicit) {
+            ActiveTimerStore.resume(this@FocusMonitorService, TimerActivityKind.FOCUS)
+          } else {
+            ActiveTimerStore.start(
+              context = this@FocusMonitorService,
+              kind = TimerActivityKind.FOCUS,
+              titleOrSkillName = if (studyOn) "Study Focus Session" else "Focus Session",
+              plannedMinutes = plannedMins,
+              studyMode = studyOn,
+            )
+          }
+
+          val sessionId = if (cfg.activeSessionId > 0L && existingTimer.isActive) {
+            cfg.activeSessionId
+          } else {
+            repo.startFocusSession(activeTimer.plannedMinutes, studyOn).getOrDefault(0L)
+          }
+
+          val initialRem = activeTimer.remainingCountdownSeconds()
+          val hasUsage = UsageStatsHelper.isUsageAccessGranted(this@FocusMonitorService)
+          val statusMsg = if (hasUsage) {
+            "Study Session active: monitoring app switches via UsageStatsManager."
+          } else {
+            "Study timer active. Grant Usage Access in Settings to detect distracting app switches."
+          }
 
           val nextCfg = repo.updateFocusConfig {
             it.copy(
               focusModeEnabled = true,
+              studyModeEnabled = studyOn,
               activeTimerRunning = true,
               activeTimerRemainingSeconds = initialRem,
               activeSessionId = sessionId,
+              studyWarningActive = false,
+              studyGraceRemainingSeconds = 0,
+              studyWarningMessage = if (studyOn) statusMsg else "",
               blockUntilMillis = System.currentTimeMillis() + it.blockDurationMinutes * 60_000L,
             )
           }.getOrNull() ?: cfg
+
           FocusEnforcementPrefs.syncFromRoom(this@FocusMonitorService, nextCfg, repo.getDistractingAppsSync())
-          val studyAnn = AlfredAnnouncementEngine.buildStudyStartAnnouncement(
-            plannedMinutes = plannedMins,
-            studyModeEnabled = nextCfg.studyModeEnabled,
-          )
-          if (nextCfg.aiMorningBriefing) {
-            AlfredAnnouncementService.announceInBackground(
-              context = this@FocusMonitorService,
-              title = studyAnn.title,
-              message = studyAnn.spokenMessage,
-              notificationId = VisionNotificationHelper.FOCUS_NOTIFICATION_ID + 1,
-              speakAloud = true,
+          if (!existingTimer.isActive || isStudyExplicit) {
+            val studyAnn = AlfredAnnouncementEngine.buildStudyStartAnnouncement(
+              plannedMinutes = activeTimer.plannedMinutes,
+              studyModeEnabled = nextCfg.studyModeEnabled,
             )
+            if (nextCfg.aiMorningBriefing) {
+              AlfredAnnouncementService.announceInBackground(
+                context = this@FocusMonitorService,
+                title = studyAnn.title,
+                message = studyAnn.spokenMessage,
+                notificationId = VisionNotificationHelper.FOCUS_NOTIFICATION_ID + 1,
+                speakAloud = true,
+              )
+            }
           }
           ensureLoopRunning(repo)
         }
@@ -133,8 +177,12 @@ class FocusMonitorService : Service() {
 
       ACTION_PAUSE_FOCUS -> {
         serviceScope.launch {
+          val pausedTimer = ActiveTimerStore.pause(this@FocusMonitorService, TimerActivityKind.FOCUS)
           val nextCfg = repo.updateFocusConfig {
-            it.copy(activeTimerRunning = false)
+            it.copy(
+              activeTimerRunning = false,
+              activeTimerRemainingSeconds = if (pausedTimer.isActive) pausedTimer.remainingCountdownSeconds() else it.activeTimerRemainingSeconds,
+            )
           }.getOrNull()
           if (nextCfg != null) {
             FocusEnforcementPrefs.syncFromRoom(this@FocusMonitorService, nextCfg, repo.getDistractingAppsSync())
@@ -145,20 +193,39 @@ class FocusMonitorService : Service() {
         }
       }
 
-      ACTION_RESET_FOCUS -> {
-        val plannedMins = intent.getIntExtra(EXTRA_PLANNED_MINUTES, 25)
+      ACTION_RESET_FOCUS, ACTION_STOP_STUDY_SESSION -> {
+        val stopCompletely = intent.action == ACTION_STOP_STUDY_SESSION
+        val plannedMins = intent.getIntExtra(EXTRA_PLANNED_MINUTES, 25).coerceIn(5, 180)
+        distractionTracker.reset()
         serviceScope.launch {
           val cfg = repo.getFocusConfigSync()
+          val completed = ActiveTimerStore.finishAndClear(this@FocusMonitorService, TimerActivityKind.FOCUS)
+          val savedMins = completed?.durationMinutes ?: 0
+          if (completed != null && savedMins > 0) {
+            repo.saveActivitySession(
+              ActivitySessionEntity(
+                activityType = "FOCUS",
+                dateKey = DateKeyHelper.todayKey(completed.startTimeMillis),
+                titleOrSkillName = completed.titleOrSkillName.ifBlank { "Focus Session" },
+                notes = if (cfg.studyModeEnabled) "Study Mode session" else "Focus timer session",
+                startTimeMillis = completed.startTimeMillis,
+                endTimeMillis = completed.endTimeMillis,
+                durationMinutes = savedMins,
+                source = "TIMER",
+              ),
+            )
+          }
           if (cfg.activeSessionId > 0L) {
             repo.updateFocusSessionProgress(
               sessionId = cfg.activeSessionId,
-              actualMinutes = ((plannedMins * 60 - cfg.activeTimerRemainingSeconds).coerceAtLeast(0)) / 60,
+              actualMinutes = savedMins,
               newStatus = "STOPPED",
               endMillis = System.currentTimeMillis(),
             )
           }
           val nextCfg = repo.updateFocusConfig {
             it.copy(
+              focusModeEnabled = if (stopCompletely) false else it.focusModeEnabled,
               activeTimerRunning = false,
               activeTimerRemainingSeconds = plannedMins * 60,
               activeSessionId = 0L,
@@ -175,42 +242,17 @@ class FocusMonitorService : Service() {
         }
       }
 
-      ACTION_TRIGGER_STUDY_WARNING_CHECK -> {
-        serviceScope.launch {
-          val cfg = repo.getFocusConfigSync()
-          val grace = cfg.gracePeriodSeconds.coerceAtLeast(5)
-          repo.updateFocusConfig {
-            it.copy(
-              studyWarningActive = true,
-              studyGraceRemainingSeconds = grace,
-              studyWarningMessage = "Extended YouTube usage flagged in Study Mode. Return to study within ${grace}s or restriction applies.",
-            )
-          }
-          val studyWarn = AlfredAnnouncementEngine.buildDistractionWarningAnnouncement(
-            appName = "YouTube",
-            isStudyModeYouTube = true,
-            graceSeconds = grace,
-          )
-          AlfredAnnouncementService.announceInBackground(
-            context = this@FocusMonitorService,
-            title = studyWarn.title,
-            message = studyWarn.spokenMessage,
-            notificationId = VisionNotificationHelper.STUDY_WARNING_NOTIFICATION_ID,
-            speakAloud = cfg.aiMorningBriefing,
-            isWarning = true,
-          )
-          ensureLoopRunning(repo)
-        }
-      }
-
       ACTION_CANCEL_STUDY_WARNING -> {
-        youtubeContinuousSeconds = 0
         FocusEnforcementPrefs.setYoutubeRestrictedNow(this, false)
         serviceScope.launch {
           val cfg = repo.updateFocusConfig {
             it.copy(
               studyWarningActive = false,
-              studyWarningMessage = "",
+              studyWarningMessage = if (it.activeTimerRunning && it.studyModeEnabled) {
+                "Study Session active: monitoring app switches via UsageStatsManager."
+              } else {
+                ""
+              },
               studyGraceRemainingSeconds = 0,
             )
           }.getOrNull()
@@ -233,34 +275,66 @@ class FocusMonitorService : Service() {
         tickCount++
         val cfg = repo.getFocusConfigSync()
         val apps = repo.getDistractingAppsSync()
+        val timer = ActiveTimerStore.get(this@FocusMonitorService, TimerActivityKind.FOCUS)
         FocusEnforcementPrefs.syncFromRoom(this@FocusMonitorService, cfg, apps)
 
         var updatedCfg = cfg
-        var shouldStop = !cfg.activeTimerRunning && !cfg.studyWarningActive
+        val isRunning = cfg.activeTimerRunning && (!timer.isActive || timer.isRunning)
+        val shouldStop = !isRunning && !cfg.studyWarningActive
 
-        // 1. Focus Session Countdown
-        if (cfg.activeTimerRunning) {
-          val nextRem = (cfg.activeTimerRemainingSeconds - 1).coerceAtLeast(0)
-          val elapsedMins = ((25 * 60 - nextRem).coerceAtLeast(0)) / 60
+        // 1. Focus / Study Session Countdown computed accurately from persisted timestamps
+        if (isRunning) {
+          val now = System.currentTimeMillis()
+          val nextRem = if (timer.isActive) {
+            timer.remainingCountdownSeconds(now)
+          } else {
+            (cfg.activeTimerRemainingSeconds - 1).coerceAtLeast(0)
+          }
+          val elapsedMins = if (timer.isActive) {
+            (timer.elapsedSeconds(now) / 60L).toInt()
+          } else {
+            ((25 * 60 - nextRem).coerceAtLeast(0)) / 60
+          }
+
           if (nextRem == 0) {
+            val completed = ActiveTimerStore.finishAndClear(this@FocusMonitorService, TimerActivityKind.FOCUS, now)
+            val finalMins = (completed?.durationMinutes ?: elapsedMins).coerceAtLeast(1)
+            val startMs = completed?.startTimeMillis ?: (now - finalMins * 60_000L)
+            val endMs = completed?.endTimeMillis ?: now
+            repo.saveActivitySession(
+              ActivitySessionEntity(
+                activityType = "FOCUS",
+                dateKey = DateKeyHelper.todayKey(startMs),
+                titleOrSkillName = completed?.titleOrSkillName?.ifBlank { "Focus Session" } ?: "Focus Session",
+                notes = if (cfg.studyModeEnabled) "Completed Study Mode session" else "Completed Focus session",
+                startTimeMillis = startMs,
+                endTimeMillis = endMs,
+                durationMinutes = finalMins,
+                source = "TIMER",
+              ),
+            )
             if (cfg.activeSessionId > 0L) {
               repo.updateFocusSessionProgress(
                 sessionId = cfg.activeSessionId,
-                actualMinutes = elapsedMins.coerceAtLeast(1),
+                actualMinutes = finalMins,
                 newStatus = "COMPLETED",
-                endMillis = System.currentTimeMillis(),
+                endMillis = endMs,
               )
             }
             updatedCfg = updatedCfg.copy(
+              focusModeEnabled = false,
               activeTimerRunning = false,
-              activeTimerRemainingSeconds = 25 * 60,
+              activeTimerRemainingSeconds = (timer.plannedMinutes.coerceIn(5, 180)) * 60,
               activeSessionId = 0L,
+              studyWarningActive = false,
+              studyWarningMessage = "",
             )
+            distractionTracker.reset()
             VisionNotificationHelper.postReminderNotification(
               context = this@FocusMonitorService,
               notificationId = VisionNotificationHelper.FOCUS_NOTIFICATION_ID + 2,
-              title = "Focus Session Complete",
-              body = "Great focus! Your session has been recorded to VISION Reports.",
+              title = "Study / Focus Session Complete",
+              body = "Saved ${finalMins}m to your VISION Activity Breakdown.",
             )
           } else {
             updatedCfg = updatedCfg.copy(activeTimerRemainingSeconds = nextRem)
@@ -271,113 +345,83 @@ class FocusMonitorService : Service() {
               )
             }
           }
-          if (tickCount % 5 == 0) {
+          if (tickCount % 5 == 0 && updatedCfg.activeTimerRunning) {
             val mins = nextRem / 60
             val secs = nextRem % 60
             startFocusForeground(
-              title = "VISION Focus Active · %02d:%02d".format(mins, secs),
-              body = if (cfg.studyModeEnabled) "Study Mode enabled (YouTube educational allowance)"
-              else "Monitoring selected distracting apps",
+              title = if (cfg.studyModeEnabled) {
+                "VISION Study Session · %02d:%02d".format(mins, secs)
+              } else {
+                "VISION Focus Active · %02d:%02d".format(mins, secs)
+              },
+              body = if (UsageStatsHelper.isUsageAccessGranted(this@FocusMonitorService)) {
+                "Monitoring foreground app switches locally"
+              } else {
+                "Timer active (Usage Access not granted)"
+              },
             )
           }
         }
 
-        // 2. Study Mode Grace Period Countdown
-        if (updatedCfg.studyWarningActive) {
-          val nextGrace = (updatedCfg.studyGraceRemainingSeconds - 1).coerceAtLeast(0)
-          if (nextGrace == 0) {
-            FocusEnforcementPrefs.setYoutubeRestrictedNow(this@FocusMonitorService, true)
+        // 2. Real UsageStatsManager Foreground App-Switch Monitoring (every 2 seconds)
+        if (
+          tickCount % 2 == 0 &&
+          updatedCfg.activeTimerRunning &&
+          (updatedCfg.studyModeEnabled || updatedCfg.focusModeEnabled) &&
+          UsageStatsHelper.isUsageAccessGranted(this@FocusMonitorService)
+        ) {
+          val foregroundPkg = UsageStatsHelper.getForegroundPackageName(this@FocusMonitorService)
+          val monitoredSet = buildSet {
+            apps.filter { it.isSelectedForMonitoring || it.isBlocked }.forEach { add(it.packageName) }
+            if (updatedCfg.studyModeEnabled) {
+              add(UsageStatsHelper.YOUTUBE_PACKAGE)
+            }
+          }
+
+          val decision = distractionTracker.onForegroundObserved(
+            ownPackage = packageName,
+            foregroundPackage = foregroundPkg,
+            monitoredPackages = monitoredSet,
+          )
+
+          if (decision.shouldNotify && decision.triggeredPackage != null) {
+            val pkg = decision.triggeredPackage
+            val matchedApp = apps.firstOrNull { it.packageName == pkg }
+            val displayName = matchedApp?.appName ?: if (pkg == UsageStatsHelper.YOUTUBE_PACKAGE) "YouTube" else pkg
+            val isYouTubeStudy = pkg == UsageStatsHelper.YOUTUBE_PACKAGE && updatedCfg.studyModeEnabled
+
             if (updatedCfg.activeSessionId > 0L) {
               repo.updateFocusSessionProgress(
                 sessionId = updatedCfg.activeSessionId,
-                actualMinutes = 1,
+                actualMinutes = 0,
                 warningDelta = 1,
-                blockedDelta = 1,
+                blockedDelta = if (matchedApp?.isBlocked == true && !isYouTubeStudy) 1 else 0,
               )
             }
+
             updatedCfg = updatedCfg.copy(
-              studyWarningActive = false,
+              studyWarningActive = true,
               studyGraceRemainingSeconds = 0,
-              studyWarningMessage = "Grace period ended: YouTube restricted for this Focus window.",
+              studyWarningMessage = "Switched to $displayName during your Study Session. Return to VISION to stay focused.",
+            )
+
+            val warnAnn = AlfredAnnouncementEngine.buildDistractionWarningAnnouncement(
+              appName = displayName,
+              isStudyModeYouTube = isYouTubeStudy,
+              graceSeconds = updatedCfg.gracePeriodSeconds,
             )
             VisionNotificationHelper.postWarningNotification(
               context = this@FocusMonitorService,
               notificationId = VisionNotificationHelper.STUDY_WARNING_NOTIFICATION_ID,
-              title = "Study Mode Restriction Applied",
-              body = "Grace period elapsed. YouTube is now restricted until Study Mode resets.",
+              title = warnAnn.title,
+              body = warnAnn.message,
             )
-          } else {
-            updatedCfg = updatedCfg.copy(
-              studyGraceRemainingSeconds = nextGrace,
-              studyWarningMessage = "Study Mode Warning: return to study within ${nextGrace}s or restriction applies.",
-            )
-          }
-        }
-
-        // 3. Real UsageStatsManager Foreground Polling every 3 seconds
-        if (tickCount % 3 == 0 && UsageStatsHelper.isUsageAccessGranted(this@FocusMonitorService)) {
-          val pkg = UsageStatsHelper.getForegroundPackageName(this@FocusMonitorService)
-          if (pkg != null && pkg != packageName) {
-            val matchedApp = apps.firstOrNull { it.packageName == pkg }
-            if (pkg == UsageStatsHelper.YOUTUBE_PACKAGE && updatedCfg.studyModeEnabled) {
-              youtubeContinuousSeconds += 3
-              // After 15 minutes continuous YouTube session during Focus, warn unless user dismisses
-              if (youtubeContinuousSeconds >= 15 * 60 && !updatedCfg.studyWarningActive) {
-                val grace = updatedCfg.gracePeriodSeconds.coerceAtLeast(10)
-                updatedCfg = updatedCfg.copy(
-                  studyWarningActive = true,
-                  studyGraceRemainingSeconds = grace,
-                  studyWarningMessage = "15m continuous YouTube detected in Study Mode. Confirm educational study or return within ${grace}s.",
-                )
-                val youtubeWarn = AlfredAnnouncementEngine.buildDistractionWarningAnnouncement(
-                  appName = "YouTube",
-                  isStudyModeYouTube = true,
-                  graceSeconds = grace,
-                )
-                AlfredAnnouncementService.announceInBackground(
-                  context = this@FocusMonitorService,
-                  title = youtubeWarn.title,
-                  message = youtubeWarn.spokenMessage,
-                  notificationId = VisionNotificationHelper.STUDY_WARNING_NOTIFICATION_ID,
-                  speakAloud = updatedCfg.aiMorningBriefing,
-                  isWarning = true,
-                )
-              }
-            } else {
-              youtubeContinuousSeconds = 0
-              if (matchedApp != null && matchedApp.isBlocked && updatedCfg.focusModeEnabled) {
-                if (lastNotifiedBlockedPkg != pkg) {
-                  lastNotifiedBlockedPkg = pkg
-                  if (updatedCfg.activeSessionId > 0L) {
-                    repo.updateFocusSessionProgress(
-                      sessionId = updatedCfg.activeSessionId,
-                      actualMinutes = 0,
-                      blockedDelta = 1,
-                    )
-                  }
-                  val appWarn = AlfredAnnouncementEngine.buildDistractionWarningAnnouncement(
-                    appName = matchedApp.appName,
-                    isStudyModeYouTube = false,
-                  )
-                  AlfredAnnouncementService.announceInBackground(
-                    context = this@FocusMonitorService,
-                    title = appWarn.title,
-                    message = appWarn.spokenMessage,
-                    notificationId = VisionNotificationHelper.STUDY_WARNING_NOTIFICATION_ID + 2,
-                    speakAloud = updatedCfg.aiMorningBriefing,
-                    isWarning = true,
-                  )
-                }
-              } else {
-                lastNotifiedBlockedPkg = null
-              }
-            }
           }
         }
 
         repo.updateFocusConfig { updatedCfg }
 
-        if (shouldStop) {
+        if (shouldStop || !updatedCfg.activeTimerRunning) {
           stopForegroundAndSelf()
           break
         }
